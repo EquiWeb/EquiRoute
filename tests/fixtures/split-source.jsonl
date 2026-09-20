@@ -1,0 +1,15 @@
+{"id":"split-billing-001","input":"How can I review an example invoice amount?","route":{"name":"billing_support"}}
+{"id":"split-billing-002","input":"Where does an example payment receipt appear?","route":{"name":"billing_support"}}
+{"id":"split-billing-003","input":"What does the sample renewal charge mean?","route":{"name":"billing_support"}}
+{"id":"split-billing-004","input":"Can an example refund status be checked?","route":{"name":"billing_support"}}
+{"id":"split-billing-005","input":"Which test subscription plan is active?","route":{"name":"billing_support"}}
+{"id":"split-technical-001","input":"Why does this sample application show a launch error?","route":{"name":"technical_support"}}
+{"id":"split-technical-002","input":"How is a demo integration endpoint configured?","route":{"name":"technical_support"}}
+{"id":"split-technical-003","input":"What can cause a test connection timeout?","route":{"name":"technical_support"}}
+{"id":"split-technical-004","input":"Where can example diagnostic logs be found?","route":{"name":"technical_support"}}
+{"id":"split-technical-005","input":"How do I update a sample client setting?","route":{"name":"technical_support"}}
+{"id":"split-account-001","input":"How can an example profile name be changed?","route":{"name":"account_support"}}
+{"id":"split-account-002","input":"Where is a demo password reset option?","route":{"name":"account_support"}}
+{"id":"split-account-003","input":"Can a sample account email be updated?","route":{"name":"account_support"}}
+{"id":"split-account-004","input":"Why might a test sign-in attempt fail?","route":{"name":"account_support"}}
+{"id":"split-account-005","input":"How is an example account access request handled?","route":{"name":"account_support"}}

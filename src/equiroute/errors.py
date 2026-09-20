@@ -19,18 +19,23 @@ class SourceError(EquiRouteError):
         source: str | Path,
         line: int | None = None,
         path: str | None = None,
+        correction: str | None = None,
     ) -> None:
         self.message = message
         self.source = str(source)
         self.line = line
         self.path = path
+        self.correction = correction
 
         location = self.source
         if line is not None:
             location += f":{line}"
         if path:
             location += f": {path}"
-        super().__init__(f"{location}: {message}")
+        rendered = f"{location}: {message}"
+        if correction:
+            rendered += f"; correction: {correction}"
+        super().__init__(rendered)
 
 
 class RegistryLoadError(SourceError):

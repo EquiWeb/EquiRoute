@@ -1,0 +1,3 @@
+{"id":"curated-validation-billing-001","input":"Example billing question about a payment receipt.","route":{"name":"billing_support"}}
+{"id":"curated-validation-technical-001","input":"Example technical question about a connection timeout.","route":{"name":"technical_support"}}
+{"id":"curated-validation-account-001","input":"Example account question about a password reset link.","route":{"name":"account_support"}}

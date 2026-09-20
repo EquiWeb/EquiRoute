@@ -4,8 +4,8 @@ model:
 routes: routes.yaml
 data:
   train: train.jsonl
-  validation: train.jsonl
-  test: train.jsonl
+  validation: validation.jsonl
+  test: test.jsonl
 training:
   seed: 42
   epochs: 4

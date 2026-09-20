@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
+from .dataset import split_dataset, validate_partitions, write_split
 from .errors import EquiRouteError
-from .io import load_examples, load_route_registry, load_training_config
+from .io import load_route_registry, load_training_config
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -26,17 +28,27 @@ def validate(config: Annotated[Path, typer.Argument(exists=True, readable=True)]
         training_config = load_training_config(config)
         base_directory = config.parent
         registry = load_route_registry(base_directory / training_config.routes)
-        for dataset in (
-            training_config.data.train,
-            training_config.data.validation,
-            training_config.data.test,
-        ):
-            load_examples(base_directory / dataset, registry)
+        report = validate_partitions(
+            {
+                "train": base_directory / training_config.data.train,
+                "validation": base_directory / training_config.data.validation,
+                "test": base_directory / training_config.data.test,
+            },
+            registry,
+        )
     except EquiRouteError as error:
         typer.echo(f"Validation failed: {error}", err=True)
         raise typer.Exit(code=1) from error
 
-    typer.echo(f"Validated {config}")
+    typer.echo(
+        json.dumps(
+            report.model_dump(mode="json"),
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
 
 
 def _unavailable(stage: str) -> None:
@@ -46,12 +58,22 @@ def _unavailable(stage: str) -> None:
 
 @app.command()
 def split(
-    data: Annotated[Path, typer.Argument()],
-    routes: Annotated[Path, typer.Option()],
+    data: Annotated[Path, typer.Argument(exists=True, readable=True)],
+    routes: Annotated[Path, typer.Option(exists=True, readable=True)],
     seed: Annotated[int, typer.Option()] = 42,
+    output_directory: Annotated[Path | None, typer.Option("--output-dir")] = None,
 ) -> None:
-    """Create deterministic data splits (available in Stage 1)."""
-    _unavailable("Stage 1")
+    """Create deterministic data splits."""
+    output_directory = output_directory or data.with_name(f"{data.stem}-splits")
+    try:
+        registry = load_route_registry(routes)
+        result = split_dataset(data, registry, seed=seed)
+        write_split(result, output_directory)
+    except EquiRouteError as error:
+        typer.echo(f"Split failed: {error}", err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(f"Wrote splits to {output_directory}")
 
 
 @app.command()

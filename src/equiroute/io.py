@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -21,6 +23,78 @@ from .schemas import (
 )
 
 _Model = TypeVar("_Model", bound=BaseModel)
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedExample:
+    """A validated example with its source location."""
+
+    example: Example
+    source: Path
+    line: int
+
+
+def iter_examples(
+    path: str | Path, registry: RouteRegistry, *, content_hasher: Any | None = None
+) -> Iterator[LoadedExample]:
+    """Stream validated JSONL examples with their one-based source locations."""
+
+    source = Path(path)
+    try:
+        with source.open("rb") as examples_file:
+            for line_number, raw_line in enumerate(examples_file, start=1):
+                if content_hasher is not None:
+                    content_hasher.update(raw_line)
+                try:
+                    line = raw_line.decode("utf-8")
+                except UnicodeDecodeError as error:
+                    raise ExampleLoadError(
+                        f"could not decode UTF-8: {error}",
+                        source=source,
+                        line=line_number,
+                        path="$",
+                        correction="replace this line with valid UTF-8 JSON",
+                    ) from error
+                if not line.strip():
+                    raise ExampleLoadError(
+                        "expected a JSON object, got a blank line",
+                        source=source,
+                        line=line_number,
+                        path="$",
+                        correction="remove blank lines; each line must be a JSON object",
+                    )
+                try:
+                    document = json.loads(
+                        line, parse_constant=_reject_nonstandard_json_constant
+                    )
+                except (json.JSONDecodeError, ValueError) as error:
+                    raise ExampleLoadError(
+                        f"malformed JSON: {error}",
+                        source=source,
+                        line=line_number,
+                        path="$",
+                        correction="replace this line with a valid JSON object",
+                    ) from error
+                if not isinstance(document, dict):
+                    raise ExampleLoadError(
+                        "expected a JSON object",
+                        source=source,
+                        line=line_number,
+                        path="$",
+                        correction="replace this line with a JSON object",
+                    )
+
+                example = _validate_model(
+                    document, Example, source, ExampleLoadError, "example", line_number
+                )
+                _validate_decision(example.route, registry, source, line_number)
+                yield LoadedExample(example=example, source=source, line=line_number)
+    except OSError as error:
+        raise ExampleLoadError(
+            f"could not read examples: {error}",
+            source=source,
+            correction="ensure the file exists and is valid UTF-8",
+        ) from error
 
 
 def load_route_registry(path: str | Path) -> RouteRegistry:
@@ -42,45 +116,23 @@ def load_training_config(path: str | Path) -> TrainingConfig:
 
 
 def load_examples(path: str | Path, registry: RouteRegistry) -> list[Example]:
-    """Load and validate every JSON object in a JSONL examples file."""
-
-    source = Path(path)
-    try:
-        lines = source.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as error:
-        raise ExampleLoadError(f"could not read examples: {error}", source=source) from error
+    """Load every validated JSONL example into a list for existing callers."""
 
     examples: list[Example] = []
     ids: dict[str, int] = {}
-    for line_number, line in enumerate(lines, start=1):
-        if not line.strip():
-            raise ExampleLoadError("expected a JSON object, got a blank line", source=source, line=line_number)
-        try:
-            document = json.loads(line, parse_constant=_reject_nonstandard_json_constant)
-        except (json.JSONDecodeError, ValueError) as error:
-            raise ExampleLoadError(
-                f"malformed JSON: {error}", source=source, line=line_number
-            ) from error
-        if not isinstance(document, dict):
-            raise ExampleLoadError(
-                "expected a JSON object", source=source, line=line_number
-            )
-
-        example = _validate_model(
-            document, Example, source, ExampleLoadError, "example", line_number
-        )
-        _validate_decision(example.route, registry, source, line_number)
-
+    for loaded in iter_examples(path, registry):
+        example = loaded.example
         if example.id is not None:
             first_line = ids.get(example.id)
             if first_line is not None:
                 raise ExampleLoadError(
                     f"duplicate example id {example.id!r}; first declared on line {first_line}",
-                    source=source,
-                    line=line_number,
+                    source=loaded.source,
+                    line=loaded.line,
                     path="id",
+                    correction="assign a unique id",
                 )
-            ids[example.id] = line_number
+            ids[example.id] = loaded.line
         examples.append(example)
     return examples
 
@@ -91,7 +143,11 @@ def _load_yaml_mapping(
     try:
         text = source.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
-        raise error_type(f"could not read {document_name}: {error}", source=source) from error
+        raise error_type(
+            f"could not read {document_name}: {error}",
+            source=source,
+            correction="ensure the file exists and is valid UTF-8",
+        ) from error
 
     try:
         document = yaml.safe_load(text)
@@ -101,10 +157,15 @@ def _load_yaml_mapping(
             f"malformed YAML: {getattr(error, 'problem', None) or error}",
             source=source,
             line=line,
+            correction="repair the YAML syntax",
         ) from error
 
     if not isinstance(document, dict):
-        raise error_type(f"expected a YAML mapping for {document_name}", source=source)
+        raise error_type(
+            f"expected a YAML mapping for {document_name}",
+            source=source,
+            correction="replace the document root with a YAML mapping",
+        )
     return document
 
 
@@ -123,7 +184,10 @@ def _validate_model(
             f"{_format_location(issue['loc'])}: {issue['msg']}" for issue in error.errors()
         )
         raise error_type(
-            f"invalid {document_name}: {details}", source=source, line=line
+            f"invalid {document_name}: {details}",
+            source=source,
+            line=line,
+            correction=_validation_correction(error),
         ) from error
 
 
@@ -132,11 +196,13 @@ def _validate_decision(
 ) -> None:
     route = registry.route_named(decision.name)
     if route is None:
+        route_names = ", ".join(route.name for route in registry.routes)
         raise ExampleLoadError(
             f"unknown route {decision.name!r}",
             source=source,
             line=line,
             path="route.name",
+            correction=f"choose one of: {route_names}",
         )
 
     argument_errors = _argument_errors(decision.arguments, route)
@@ -146,6 +212,7 @@ def _validate_decision(
             source=source,
             line=line,
             path="route.arguments",
+            correction=_argument_correction(decision.arguments, route),
         )
 
 
@@ -168,6 +235,61 @@ def _argument_errors(arguments: dict[str, Any], route: Route) -> list[str]:
                 f"argument {name!r} must be {property_schema.type}, got {_json_type_name(value)}"
             )
     return errors
+
+
+def _argument_correction(arguments: dict[str, Any], route: Route) -> str:
+    schema: ObjectArgumentSchema = route.parameters
+    corrections: list[str] = []
+
+    missing = [name for name in schema.required if name not in arguments]
+    if missing:
+        corrections.append(
+            "add required argument" + ("s" if len(missing) > 1 else "") + ": "
+            + ", ".join(repr(name) for name in missing)
+        )
+
+    unknown = [name for name in arguments if name not in schema.properties]
+    if unknown:
+        corrections.append(
+            "remove unsupported argument" + ("s" if len(unknown) > 1 else "") + ": "
+            + ", ".join(repr(name) for name in unknown)
+        )
+
+    for name, value in arguments.items():
+        property_schema = schema.properties.get(name)
+        if property_schema is not None and not _matches_primitive(
+            value, property_schema.type
+        ):
+            corrections.append(
+                f"set argument {name!r} to a {property_schema.type}"
+            )
+    return "; ".join(corrections)
+
+
+def _validation_correction(error: ValidationError) -> str | None:
+    issues = error.errors()
+    types = {issue["type"] for issue in issues}
+    locations = [_format_location(issue["loc"]) for issue in issues]
+
+    if types == {"missing"}:
+        return "add required field" + ("s" if len(locations) > 1 else "") + ": " + ", ".join(
+            locations
+        )
+    if types == {"extra_forbidden"}:
+        return "remove unsupported field" + (
+            "s" if len(locations) > 1 else ""
+        ) + ": " + ", ".join(locations)
+    if types <= {"string_too_short"}:
+        return "provide a non-empty string"
+    if types <= {"string_type"}:
+        return "provide a string"
+    if types <= {"dict_type", "model_type"}:
+        return "provide an object"
+    if types <= {"list_type"}:
+        return "provide a list"
+    return "correct invalid field" + ("s" if len(locations) > 1 else "") + ": " + ", ".join(
+        locations
+    )
 
 
 def _matches_primitive(value: Any, expected_type: str) -> bool:

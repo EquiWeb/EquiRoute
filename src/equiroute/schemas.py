@@ -126,6 +126,72 @@ class TrainingConfig(StrictModel):
     output: OutputConfig
 
 
+class RouteDistribution(StrictModel):
+    """Counts for one registry route across Stage 1 dataset partitions."""
+
+    name: str = Field(min_length=1)
+    total: int = Field(ge=0)
+    train: int = Field(ge=0)
+    validation: int = Field(ge=0)
+    test: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_total(self) -> RouteDistribution:
+        if self.total != self.train + self.validation + self.test:
+            raise ValueError("total must equal train + validation + test")
+        return self
+
+
+class DatasetArtifact(StrictModel):
+    """One validated or emitted dataset file."""
+
+    examples: int = Field(ge=0)
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class DatasetReport(StrictModel):
+    """Stage 1 dataset size and route-distribution report."""
+
+    schema_version: Literal["1"]
+    example_count: int = Field(ge=0)
+    route_distribution: list[RouteDistribution] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_example_count(self) -> DatasetReport:
+        if self.example_count != sum(
+            distribution.total for distribution in self.route_distribution
+        ):
+            raise ValueError("example_count must equal the route distribution total")
+        return self
+
+
+class DatasetManifest(StrictModel):
+    """Stage 1 dataset provenance, separate from the future training manifest."""
+
+    schema_version: Literal["1"]
+    registry_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_fingerprint: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    split_seed: int | None = None
+    split_ratios: dict[str, float] | None = None
+    datasets: dict[str, DatasetArtifact] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_split_metadata(self) -> DatasetManifest:
+        if (self.split_seed is None) != (self.split_ratios is None):
+            raise ValueError("split_seed and split_ratios must be provided together")
+        if self.split_ratios is not None and self.split_ratios != {
+            "train": 0.8,
+            "validation": 0.1,
+            "test": 0.1,
+        }:
+            raise ValueError("split_ratios must be the fixed Stage 1 80/10/10 ratios")
+        if any(not name for name in self.datasets):
+            raise ValueError("datasets must not contain an empty name")
+        return self
+
+
 class Manifest(StrictModel):
     """Vocabulary for a future reproducibility manifest; it has no behavior."""
 

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from equiroute.errors import ConfigLoadError, ExampleLoadError, RegistryLoadError
-from equiroute.io import load_examples, load_route_registry, load_training_config
+from equiroute.io import iter_examples, load_examples, load_route_registry, load_training_config
 
 
 def _registry_file(tmp_path):
@@ -73,6 +73,7 @@ def test_rejects_arguments_outside_the_route_schema(tmp_path):
         load_examples(examples, registry)
 
 
+
 def test_rejects_duplicate_example_ids_with_both_line_numbers(tmp_path):
     registry = load_route_registry(_registry_file(tmp_path))
     examples = tmp_path / "examples.jsonl"
@@ -87,8 +88,34 @@ def test_rejects_duplicate_example_ids_with_both_line_numbers(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ExampleLoadError, match=r"examples\.jsonl:2: id: duplicate example id 'same'; first declared on line 1"):
+    with pytest.raises(
+        ExampleLoadError,
+        match=r"examples\.jsonl:2: id: duplicate example id 'same'; first declared on line 1",
+    ):
         load_examples(examples, registry)
+
+def test_iter_examples_yields_locations_before_later_row_validation(tmp_path):
+    registry = load_route_registry(_registry_file(tmp_path))
+    examples = tmp_path / "examples.jsonl"
+    examples.write_text(
+        "\n".join(
+            [
+                '{"id":"one","input":"First","route":{"name":"technical_support"}}',
+                "{not json}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    iterator = iter_examples(examples, registry)
+    loaded = next(iterator)
+
+    assert loaded.example.id == "one"
+    assert loaded.source == examples
+    assert loaded.line == 1
+    with pytest.raises(ExampleLoadError, match=r"examples\.jsonl:2: \$: malformed JSON"):
+        next(iterator)
 
 
 def test_rejects_malformed_jsonl_with_line_context(tmp_path):
@@ -96,8 +123,13 @@ def test_rejects_malformed_jsonl_with_line_context(tmp_path):
     examples = tmp_path / "examples.jsonl"
     examples.write_text("{not json}\n", encoding="utf-8")
 
-    with pytest.raises(ExampleLoadError, match=r"examples\.jsonl:1: malformed JSON"):
-        load_examples(examples, registry)
+    with pytest.raises(
+        ExampleLoadError,
+        match=r"examples\.jsonl:1: \$: malformed JSON.*; correction: replace this line with a valid JSON object",
+    ) as raised:
+        next(iter_examples(examples, registry))
+
+    assert raised.value.correction == "replace this line with a valid JSON object"
 
 
 def test_rejects_invalid_utf8_with_source_context(tmp_path):
@@ -105,7 +137,7 @@ def test_rejects_invalid_utf8_with_source_context(tmp_path):
     examples = tmp_path / "examples.jsonl"
     examples.write_bytes(b"\xff")
 
-    with pytest.raises(ExampleLoadError, match=r"examples\.jsonl: could not read examples"):
+    with pytest.raises(ExampleLoadError, match=r"examples\.jsonl:1: \$: could not decode UTF-8"):
         load_examples(examples, registry)
 
 
