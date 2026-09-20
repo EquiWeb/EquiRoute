@@ -1,0 +1,3 @@
+{"id":"fixture-001","input":"I was charged twice for my subscription.","route":{"name":"billing_support"},"metadata":{"source":"hand_labeled"}}
+{"id":"fixture-002","input":"The desktop app fails to start after updating.","route":{"name":"technical_support"}}
+{"id":"fixture-003","input":"I cannot sign in to update my profile.","route":{"name":"account_support","arguments":{"email":"user@example.com"}}}

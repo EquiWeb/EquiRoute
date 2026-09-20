@@ -1,0 +1,20 @@
+model:
+  base_model: google/functiongemma-270m-it
+  revision: 39eccb091651513a5dfb56892d3714c1b5b8276c
+routes: routes.yaml
+data:
+  train: train.jsonl
+  validation: train.jsonl
+  test: train.jsonl
+training:
+  seed: 42
+  epochs: 4
+  learning_rate: 0.0002
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  lora_rank: 16
+  lora_alpha: 32
+  max_sequence_length: 1024
+output:
+  directory: runs/support-router-v1
+  export: merged_huggingface
