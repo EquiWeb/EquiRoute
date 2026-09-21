@@ -1,0 +1,20 @@
+routes:
+  - name: submit_ticket
+    description: Submits a support ticket with all supported primitive arguments.
+    parameters:
+      type: object
+      properties:
+        subject:
+          type: string
+        ratio:
+          type: number
+        enabled:
+          type: boolean
+        priority:
+          type: integer
+      required:
+        - subject
+        - priority
+        - ratio
+        - enabled
+      additionalProperties: false

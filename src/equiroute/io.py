@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,15 +11,9 @@ from typing import Any, TypeVar
 import yaml
 from pydantic import BaseModel, ValidationError
 
+from .decisions import DecisionValidationError, _argument_correction, validate_decision
 from .errors import ConfigLoadError, ExampleLoadError, RegistryLoadError, SourceError
-from .schemas import (
-    Decision,
-    Example,
-    ObjectArgumentSchema,
-    Route,
-    RouteRegistry,
-    TrainingConfig,
-)
+from .schemas import Decision, Example, RouteRegistry, TrainingConfig
 
 _Model = TypeVar("_Model", bound=BaseModel)
 
@@ -194,76 +187,29 @@ def _validate_model(
 def _validate_decision(
     decision: Decision, registry: RouteRegistry, source: Path, line: int
 ) -> None:
-    route = registry.route_named(decision.name)
-    if route is None:
-        route_names = ", ".join(route.name for route in registry.routes)
-        raise ExampleLoadError(
-            f"unknown route {decision.name!r}",
-            source=source,
-            line=line,
-            path="route.name",
-            correction=f"choose one of: {route_names}",
-        )
+    try:
+        validate_decision(decision, registry)
+    except DecisionValidationError as error:
+        if error.category == "unknown_route":
+            route_names = ", ".join(route.name for route in registry.routes)
+            raise ExampleLoadError(
+                error.detail,
+                source=source,
+                line=line,
+                path="route.name",
+                correction=f"choose one of: {route_names}",
+            ) from error
 
-    argument_errors = _argument_errors(decision.arguments, route)
-    if argument_errors:
+        route = registry.route_named(decision.name)
+        if route is None:
+            raise AssertionError("invalid arguments reported for an unknown route") from error
         raise ExampleLoadError(
-            "; ".join(argument_errors),
+            error.detail,
             source=source,
             line=line,
             path="route.arguments",
             correction=_argument_correction(decision.arguments, route),
-        )
-
-
-def _argument_errors(arguments: dict[str, Any], route: Route) -> list[str]:
-    schema: ObjectArgumentSchema = route.parameters
-    errors: list[str] = []
-
-    for name in schema.required:
-        if name not in arguments:
-            errors.append(f"missing required argument {name!r}")
-
-    for name in arguments:
-        if name not in schema.properties:
-            errors.append(f"unknown argument {name!r}")
-
-    for name, value in arguments.items():
-        property_schema = schema.properties.get(name)
-        if property_schema is not None and not _matches_primitive(value, property_schema.type):
-            errors.append(
-                f"argument {name!r} must be {property_schema.type}, got {_json_type_name(value)}"
-            )
-    return errors
-
-
-def _argument_correction(arguments: dict[str, Any], route: Route) -> str:
-    schema: ObjectArgumentSchema = route.parameters
-    corrections: list[str] = []
-
-    missing = [name for name in schema.required if name not in arguments]
-    if missing:
-        corrections.append(
-            "add required argument" + ("s" if len(missing) > 1 else "") + ": "
-            + ", ".join(repr(name) for name in missing)
-        )
-
-    unknown = [name for name in arguments if name not in schema.properties]
-    if unknown:
-        corrections.append(
-            "remove unsupported argument" + ("s" if len(unknown) > 1 else "") + ": "
-            + ", ".join(repr(name) for name in unknown)
-        )
-
-    for name, value in arguments.items():
-        property_schema = schema.properties.get(name)
-        if property_schema is not None and not _matches_primitive(
-            value, property_schema.type
-        ):
-            corrections.append(
-                f"set argument {name!r} to a {property_schema.type}"
-            )
-    return "; ".join(corrections)
+        ) from error
 
 
 def _validation_correction(error: ValidationError) -> str | None:
@@ -292,34 +238,6 @@ def _validation_correction(error: ValidationError) -> str | None:
     )
 
 
-def _matches_primitive(value: Any, expected_type: str) -> bool:
-    if expected_type == "string":
-        return isinstance(value, str)
-    if expected_type == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if expected_type == "number":
-        return (
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and math.isfinite(value)
-        )
-    return isinstance(value, bool)
-
-
-def _json_type_name(value: Any) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, str):
-        return "string"
-    if isinstance(value, int):
-        return "integer"
-    if isinstance(value, float):
-        return "number"
-    if isinstance(value, list):
-        return "array"
-    return "object"
 
 
 def _format_location(location: tuple[Any, ...]) -> str:

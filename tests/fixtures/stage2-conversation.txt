@@ -1,0 +1,6 @@
+<bos><start_of_turn>developer
+<start_function_declaration>declaration:submit_ticket{description:<escape>Submits a support ticket with all supported primitive arguments.<escape>,parameters:{properties:{enabled:{description:<escape><escape>,type:<escape>BOOLEAN<escape>},priority:{description:<escape><escape>,type:<escape>INTEGER<escape>},ratio:{description:<escape><escape>,type:<escape>NUMBER<escape>},subject:{description:<escape><escape>,type:<escape>STRING<escape>}},required:[<escape>subject<escape>,<escape>priority<escape>,<escape>ratio<escape>,<escape>enabled<escape>],type:<escape>OBJECT<escape>}}<end_function_declaration><end_of_turn>
+<start_of_turn>user
+Open a prioritized support ticket.<end_of_turn>
+<start_of_turn>model
+<start_function_call>call:submit_ticket{enabled:true,priority:2,ratio:0.75,subject:<escape>Cannot sign in<escape>}<end_function_call><start_function_response>

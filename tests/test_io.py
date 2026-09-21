@@ -69,8 +69,16 @@ def test_rejects_arguments_outside_the_route_schema(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ExampleLoadError, match=r"unknown argument 'extra'.*account_id.*must be string"):
+    with pytest.raises(
+        ExampleLoadError,
+        match=r"unknown argument 'extra'.*account_id.*must be string",
+    ) as raised:
         load_examples(examples, registry)
+
+    assert raised.value.path == "route.arguments"
+    assert raised.value.correction == (
+        "remove unsupported argument: 'extra'; set argument 'account_id' to a string"
+    )
 
 
 
