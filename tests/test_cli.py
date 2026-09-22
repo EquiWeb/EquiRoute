@@ -10,7 +10,7 @@ from equiroute.cli import app
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def test_help_lists_the_stage_zero_command_surface() -> None:
+def test_help_lists_the_command_surface() -> None:
     result = CliRunner().invoke(app, ["--help"])
 
     assert result.exit_code == 0

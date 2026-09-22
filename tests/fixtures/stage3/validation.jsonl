@@ -1,0 +1,9 @@
+{"id":"stage3-validation-billing-support-01","input":"The payment for my annual plan keeps failing.","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-validation-billing-support-02","input":"I need an itemized invoice for accounting.","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-validation-billing-support-03","input":"A charge from your company is unfamiliar to me.","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-validation-technical-support-01","input":"The integration authentication handshake is failing.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-validation-technical-support-02","input":"Why is the browser console reporting an application error?","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-validation-technical-support-03","input":"My scheduled job never starts running.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-validation-account-support-01","input":"I no longer have the phone used for login verification.","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-validation-account-support-02","input":"Can I rename the account owner shown in my profile?","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-validation-account-support-03","input":"My sign-in link has expired before I can use it.","route":{"name":"account_support","arguments":{}}}

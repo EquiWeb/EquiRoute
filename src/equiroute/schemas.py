@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from .model import FUNCTIONGEMMA_MODEL_ID, FUNCTIONGEMMA_REVISION
+from .model import (
+    FUNCTIONGEMMA_LORA_BIAS,
+    FUNCTIONGEMMA_LORA_DROPOUT,
+    FUNCTIONGEMMA_LORA_TARGET_MODULES,
+    FUNCTIONGEMMA_MODEL_ID,
+    FUNCTIONGEMMA_REVISION,
+    FUNCTIONGEMMA_TEMPLATE_ID,
+)
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -214,3 +221,165 @@ class EvaluationReport(StrictModel):
     schema_version: str = Field(min_length=1)
     validation: dict[str, Any] | None = None
     test: dict[str, Any] | None = None
+
+
+class TrainingInput(StrictModel):
+    """Fingerprints for one raw dataset partition and its compiled strings."""
+
+    examples: int = Field(ge=0)
+    source_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compiled_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class TrainingInputProvenance(StrictModel):
+    """The exact Stage-1 inputs consumed by a training run."""
+
+    route_registry_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    train: TrainingInput
+    validation: TrainingInput
+    test: TrainingInput
+
+
+class ResolvedLoRAConfig(StrictModel):
+    """The non-configurable and resolved LoRA settings for FunctionGemma."""
+
+    rank: int = Field(ge=1)
+    alpha: int = Field(ge=1)
+    target_modules: list[str] = Field(
+        default_factory=lambda: list(FUNCTIONGEMMA_LORA_TARGET_MODULES)
+    )
+    dropout: float = Field(
+        default=FUNCTIONGEMMA_LORA_DROPOUT, ge=0, le=1
+    )
+    bias: Literal["none"] = FUNCTIONGEMMA_LORA_BIAS
+
+    @model_validator(mode="after")
+    def validate_functiongemma_targets(self) -> ResolvedLoRAConfig:
+        if self.target_modules != list(FUNCTIONGEMMA_LORA_TARGET_MODULES):
+            raise ValueError("target_modules must be the FunctionGemma q_proj/v_proj pair")
+        if self.dropout != FUNCTIONGEMMA_LORA_DROPOUT:
+            raise ValueError("dropout must be the fixed FunctionGemma LoRA value")
+        return self
+
+
+class CheckpointPolicy(StrictModel):
+    """Fixed checkpoint cadence and selection policy for Stage 3."""
+
+    evaluation_strategy: Literal["epoch"]
+    save_strategy: Literal["epoch"]
+    metric_for_best_model: Literal["eval_loss"]
+    greater_is_better: Literal[False]
+    load_best_model_at_end: Literal[True]
+
+
+class ResolvedTrainingConfig(StrictModel):
+    """Complete model, compiler, optimizer, LoRA, and checkpoint inputs."""
+
+    model: ModelConfig
+    template_id: Literal[FUNCTIONGEMMA_TEMPLATE_ID]
+    template_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    training: TrainingOptions
+    lora: ResolvedLoRAConfig
+    checkpoints: CheckpointPolicy
+
+    @model_validator(mode="after")
+    def validate_lora_matches_training(self) -> ResolvedTrainingConfig:
+        if self.lora.rank != self.training.lora_rank:
+            raise ValueError("LoRA rank must match the resolved training configuration")
+        if self.lora.alpha != self.training.lora_alpha:
+            raise ValueError("LoRA alpha must match the resolved training configuration")
+        return self
+
+
+class TrainingHardware(StrictModel):
+    """Device and precision actually selected for a particular run."""
+
+    device: Literal["cuda", "mps", "cpu"]
+    dtype: Literal["bfloat16", "float16", "float32"]
+    mixed_precision: Literal["bf16", "fp16", "no"]
+
+    @model_validator(mode="after")
+    def validate_precision_policy(self) -> TrainingHardware:
+        expected = {
+            "cuda": {
+                ("bfloat16", "bf16"),
+                ("float16", "fp16"),
+            },
+            "mps": {("float32", "no")},
+            "cpu": {("float32", "no")},
+        }
+        if (self.dtype, self.mixed_precision) not in expected[self.device]:
+            raise ValueError("dtype and mixed_precision do not support the selected device")
+        return self
+
+
+class CheckpointSelection(StrictModel):
+    """Best validation checkpoint selected after epoch evaluation."""
+
+    metric: Literal["eval_loss"]
+    value: float
+    path: str = Field(min_length=1)
+    global_step: int = Field(ge=0)
+    epoch: float = Field(ge=0)
+
+
+class ArtifactFile(StrictModel):
+    """One content-addressed file retained in a completed artifact."""
+
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ArtifactHashes(StrictModel):
+    """Hashes for the portable model and retained continuation adapter."""
+
+    merged_model: list[ArtifactFile] = Field(min_length=1)
+    adapter: list[ArtifactFile] = Field(min_length=1)
+
+
+class PartitionEvaluation(StrictModel):
+    """Evaluation metadata recorded for one fixed dataset partition."""
+
+    examples: int = Field(ge=0)
+    loss: float
+
+
+class TrainingEvaluation(StrictModel):
+    """Validation selects; sealed test evaluation is recorded afterwards."""
+
+    validation: PartitionEvaluation
+    test: PartitionEvaluation | None = None
+    test_used_for_selection: Literal[False] = False
+
+
+class TrainingManifest(StrictModel):
+    """Strict Stage-3 provenance for a resumable FunctionGemma training run."""
+
+    schema_version: Literal["1"]
+    status: Literal["running", "completed"]
+    inputs: TrainingInputProvenance
+    resolved_config: ResolvedTrainingConfig
+    hardware: TrainingHardware
+    checkpoint_selection: CheckpointSelection | None = None
+    evaluation: TrainingEvaluation | None = None
+    artifacts: ArtifactHashes | None = None
+
+    @model_validator(mode="after")
+    def validate_completion_details(self) -> TrainingManifest:
+        if self.status == "completed" and (
+            self.checkpoint_selection is None
+            or self.evaluation is None
+            or self.artifacts is None
+        ):
+            raise ValueError(
+                "completed training manifests require checkpoint, evaluation, and hashes"
+            )
+        return self
+
+
+class TrainingArtifact(StrictModel):
+    """JSON-friendly handle returned by a completed or resumable training run."""
+
+    directory: str = Field(min_length=1)
+    status: Literal["running", "completed"]
+    manifest_path: str = Field(min_length=1)

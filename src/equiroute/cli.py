@@ -11,6 +11,7 @@ import typer
 from .dataset import split_dataset, validate_partitions, write_split
 from .errors import EquiRouteError
 from .io import load_route_registry, load_training_config
+from .training import TrainingError, export_router, train_router
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -77,9 +78,16 @@ def split(
 
 
 @app.command()
-def train(config: Annotated[Path, typer.Argument()]) -> None:
-    """Train a router (available in Stage 3)."""
-    _unavailable("Stage 3")
+def train(
+    config: Annotated[Path, typer.Argument()],
+    resume: Annotated[bool, typer.Option()] = False,
+) -> None:
+    """Train a FunctionGemma router."""
+    try:
+        train_router(config, resume=resume)
+    except TrainingError as error:
+        typer.echo(f"Training failed: {error}", err=True)
+        raise typer.Exit(code=1) from error
 
 
 @app.command()
@@ -105,5 +113,12 @@ def export(
     artifact: Annotated[Path, typer.Argument()],
     format: Annotated[str, typer.Option()] = "huggingface",
 ) -> None:
-    """Export a trained router (available in Stage 3)."""
-    _unavailable("Stage 3")
+    """Export a trained router as Hugging Face files."""
+    if format != "huggingface":
+        typer.echo("Export failed: only --format huggingface is supported.", err=True)
+        raise typer.Exit(code=2)
+    try:
+        export_router(artifact)
+    except TrainingError as error:
+        typer.echo(f"Export failed: {error}", err=True)
+        raise typer.Exit(code=1) from error

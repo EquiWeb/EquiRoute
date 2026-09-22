@@ -1,0 +1,36 @@
+{"id":"stage3-train-billing-support-01","input":"Why is there an extra charge on my card?","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-train-billing-support-02","input":"Send me a copy of last month's invoice.","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-train-billing-support-03","input":"My payment was declined at checkout.","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-train-billing-support-04","input":"How do I update the card used for billing?","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-train-billing-support-05","input":"I was charged twice for one subscription.","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-train-billing-support-06","input":"When will my refund appear on my statement?","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-train-billing-support-07","input":"The invoice total does not match my plan price.","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-train-billing-support-08","input":"Can you explain this service fee?","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-train-billing-support-09","input":"My renewal payment did not go through.","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-train-billing-support-10","input":"Where can I download a receipt for my purchase?","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-train-billing-support-11","input":"Please cancel the pending charge on my account.","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-train-billing-support-12","input":"Why did my monthly bill increase?","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-train-technical-support-01","input":"The application closes immediately after I open it.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-train-technical-support-02","input":"Our integration returns a connection timeout.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-train-technical-support-03","input":"Why does the dashboard show a blank page?","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-train-technical-support-04","input":"The mobile app freezes when I upload a file.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-train-technical-support-05","input":"I receive an error while saving my settings.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-train-technical-support-06","input":"The API responds with an unexpected server error.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-train-technical-support-07","input":"Notifications stopped arriving after the latest update.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-train-technical-support-08","input":"How do I fix a broken webhook delivery?","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-train-technical-support-09","input":"The software will not install on my computer.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-train-technical-support-10","input":"My report export fails before it finishes.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-train-technical-support-11","input":"A configuration change is not taking effect.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-train-technical-support-12","input":"The search feature returns no results for any query.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-train-account-support-01","input":"I forgot my password and cannot sign in.","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-train-account-support-02","input":"Change the display name on my profile.","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-train-account-support-03","input":"How can I update the email address on my account?","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-train-account-support-04","input":"My login verification code never arrives.","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-train-account-support-05","input":"Please help me unlock my account.","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-train-account-support-06","input":"I want to remove an old phone number from my profile.","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-train-account-support-07","input":"Where do I change my account password?","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-train-account-support-08","input":"My account was accessed from a device I do not recognize.","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-train-account-support-09","input":"I cannot log in after enabling two-factor authentication.","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-train-account-support-10","input":"How do I close my user account?","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-train-account-support-11","input":"The profile photo upload will not save.","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-train-account-support-12","input":"I need to recover access to my account.","route":{"name":"account_support","arguments":{}}}

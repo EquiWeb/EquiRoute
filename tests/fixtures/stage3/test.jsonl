@@ -1,0 +1,9 @@
+{"id":"stage3-test-billing-support-01","input":"Could you refund the duplicate subscription payment?","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-test-billing-support-02","input":"Which payment methods can I use to pay my bill?","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-test-billing-support-03","input":"I cannot find the receipt for my renewal.","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage3-test-technical-support-01","input":"The product is stuck on its loading screen.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-test-technical-support-02","input":"Please help diagnose an API request that returns 500.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-test-technical-support-03","input":"Our webhook endpoint no longer receives events.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage3-test-account-support-01","input":"Reset my password because I am locked out.","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-test-account-support-02","input":"Help me change the primary email for this account.","route":{"name":"account_support","arguments":{}}}
+{"id":"stage3-test-account-support-03","input":"Why does two-step verification reject my code?","route":{"name":"account_support","arguments":{}}}
