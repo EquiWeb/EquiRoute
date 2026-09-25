@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from equiroute.decisions import DecisionValidationError
-from equiroute.functiongemma import compile_functiongemma
+from equiroute.functiongemma import compile_functiongemma, render_functiongemma_prompt
 from equiroute.io import load_examples, load_route_registry
 from equiroute.schemas import Decision, Example
 
@@ -24,6 +24,15 @@ def test_compiles_the_pinned_functiongemma_conversation_exactly() -> None:
     compiled = compile_functiongemma(example, registry)
 
     assert compiled == (FIXTURES / "stage2-conversation.txt").read_text(encoding="utf-8")
+
+
+def test_renders_the_input_only_prompt_as_the_exact_golden_prefix() -> None:
+    registry, example = _registry_and_example()
+
+    prompt = render_functiongemma_prompt(example.input, registry)
+    golden = (FIXTURES / "stage2-conversation.txt").read_text(encoding="utf-8")
+
+    assert prompt == golden.split("<start_function_call>", maxsplit=1)[0]
 
 
 @pytest.mark.parametrize(

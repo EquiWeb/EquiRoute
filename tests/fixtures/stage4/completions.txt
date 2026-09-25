@@ -1,0 +1,6 @@
+<start_function_call>call:lookup_balance{include_pending:true,account_id:<escape>A-001<escape>}<end_function_call>
+<start_function_call>call:replace_card{}<end_function_call>
+<start_function_call>call:lookup_balance{account_id:<escape>wrong-account<escape>,include_pending:true}<end_function_call>
+<start_function_call>call:replace_card{}<end_function_call>
+<start_function_call>call:not_registered{}<end_function_call>
+<start_function_call>call:transfer_status{}

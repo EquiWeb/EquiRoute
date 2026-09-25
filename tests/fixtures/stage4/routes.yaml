@@ -1,0 +1,35 @@
+routes:
+  - name: lookup_balance
+    description: Look up an account balance.
+    parameters:
+      type: object
+      properties:
+        account_id:
+          type: string
+        include_pending:
+          type: boolean
+      required:
+        - account_id
+        - include_pending
+      additionalProperties: false
+  - name: replace_card
+    description: Replace a payment card.
+    parameters:
+      type: object
+      properties: {}
+      required: []
+      additionalProperties: false
+  - name: transfer_status
+    description: Check a transfer status.
+    parameters:
+      type: object
+      properties: {}
+      required: []
+      additionalProperties: false
+  - name: unrepresented_route
+    description: Registered only to prove zero-support metrics.
+    parameters:
+      type: object
+      properties: {}
+      required: []
+      additionalProperties: false

@@ -34,6 +34,18 @@ _CONTROL_TOKENS = (
 _BARE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*\Z")
 
 
+def render_functiongemma_prompt(input: str, registry: RouteRegistry) -> str:
+    """Render the FunctionGemma inference prompt without a function call."""
+    _require_safe_text(input, "example input")
+    declarations = "".join(_compile_declaration(route) for route in registry.routes)
+    return (
+        f"{_BOS}{_START_OF_TURN}developer\n"
+        f"{declarations}{_END_OF_TURN}\n"
+        f"{_START_OF_TURN}user\n{input.strip()}{_END_OF_TURN}\n"
+        f"{_START_OF_TURN}model\n"
+    )
+
+
 def compile_functiongemma(example: Example, registry: RouteRegistry) -> str:
     """Compile one validated example using FunctionGemma's pinned native template.
 
@@ -42,15 +54,10 @@ def compile_functiongemma(example: Example, registry: RouteRegistry) -> str:
     refuses raw values that would make the native literal syntax ambiguous.
     """
     validate_decision(example.route, registry)
-    _require_safe_text(example.input, "example input")
-
-    declarations = "".join(_compile_declaration(route) for route in registry.routes)
-    call = _compile_call(example.route.name, example.route.arguments)
     return (
-        f"{_BOS}{_START_OF_TURN}developer\n"
-        f"{declarations}{_END_OF_TURN}\n"
-        f"{_START_OF_TURN}user\n{example.input.strip()}{_END_OF_TURN}\n"
-        f"{_START_OF_TURN}model\n{call}{_START_FUNCTION_RESPONSE}"
+        render_functiongemma_prompt(example.input, registry)
+        + _compile_call(example.route.name, example.route.arguments)
+        + _START_FUNCTION_RESPONSE
     )
 
 

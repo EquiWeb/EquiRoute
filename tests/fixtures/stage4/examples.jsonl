@@ -1,0 +1,6 @@
+{"id":"stage4-lookup-balance-01","input":"Show the pending balance for account A-001.","route":{"name":"lookup_balance","arguments":{"account_id":"A-001","include_pending":true}}}
+{"id":"stage4-lookup-balance-02","input":"What is the settled balance for account B-002?","route":{"name":"lookup_balance","arguments":{"account_id":"B-002","include_pending":false}}}
+{"id":"stage4-lookup-balance-03","input":"Show the pending balance for account C-003.","route":{"name":"lookup_balance","arguments":{"account_id":"C-003","include_pending":true}}}
+{"id":"stage4-replace-card-01","input":"Replace my damaged card.","route":{"name":"replace_card","arguments":{}}}
+{"id":"stage4-replace-card-02","input":"My card was stolen; send a replacement.","route":{"name":"replace_card","arguments":{}}}
+{"id":"stage4-transfer-status-01","input":"What is the status of my bank transfer?","route":{"name":"transfer_status","arguments":{}}}

@@ -289,6 +289,7 @@ def _prepare_run(
             template_id=FUNCTIONGEMMA_TEMPLATE_ID,
             template_fingerprint=_template_fingerprint(),
             training=config.training,
+            evaluation=config.evaluation,
             lora=ResolvedLoRAConfig(
                 rank=config.training.lora_rank,
                 alpha=config.training.lora_alpha,

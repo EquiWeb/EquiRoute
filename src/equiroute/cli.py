@@ -9,6 +9,7 @@ from typing import Annotated
 import typer
 
 from .dataset import split_dataset, validate_partitions, write_split
+from .evaluation import EvaluationError, evaluate_artifact
 from .errors import EquiRouteError
 from .io import load_route_registry, load_training_config
 from .training import TrainingError, export_router, train_router
@@ -41,14 +42,16 @@ def validate(config: Annotated[Path, typer.Argument(exists=True, readable=True)]
         typer.echo(f"Validation failed: {error}", err=True)
         raise typer.Exit(code=1) from error
 
-    typer.echo(
-        json.dumps(
-            report.model_dump(mode="json"),
-            ensure_ascii=False,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+    typer.echo(_canonical_json(report.model_dump(mode="json")))
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
     )
 
 
@@ -95,8 +98,16 @@ def evaluate(
     artifact: Annotated[Path, typer.Argument()],
     data: Annotated[Path, typer.Option()],
 ) -> None:
-    """Evaluate a trained router (available in Stage 4)."""
-    _unavailable("Stage 4")
+    """Evaluate a trained router against semantic quality gates."""
+    try:
+        report = evaluate_artifact(artifact, data)
+    except EvaluationError as error:
+        typer.echo(f"Evaluation failed: {error}", err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(_canonical_json(report.model_dump(mode="json")))
+    if not report.passed:
+        raise typer.Exit(code=1)
 
 
 @app.command(name="continue")

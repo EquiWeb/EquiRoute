@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
 from .model import (
@@ -125,13 +126,30 @@ class OutputConfig(StrictModel):
     export: Literal["merged_huggingface"]
 
 
+class EvaluationThresholds(StrictModel):
+    """Inclusive quality-gate minima for semantic evaluation."""
+
+    valid_decision_rate: float = Field(default=0.0, ge=0, le=1)
+    route_accuracy: float = Field(default=0.0, ge=0, le=1)
+    argument_accuracy: float = Field(default=0.0, ge=0, le=1)
+
+
+class EvaluationConfig(StrictModel):
+    """Fixed Stage-4 semantic evaluation policy."""
+
+    arguments: Literal["exact"] = "exact"
+    redact: bool = False
+    max_new_tokens: int = Field(default=128, ge=1)
+    thresholds: EvaluationThresholds = Field(default_factory=EvaluationThresholds)
+
+
 class TrainingConfig(StrictModel):
     model: ModelConfig
     routes: str = Field(min_length=1)
     data: DataConfig
     training: TrainingOptions
     output: OutputConfig
-
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
 
 class RouteDistribution(StrictModel):
     """Counts for one registry route across Stage 1 dataset partitions."""
@@ -215,12 +233,352 @@ class Manifest(StrictModel):
     parent_artifact: str | None = None
 
 
-class EvaluationReport(StrictModel):
-    """Vocabulary for a future evaluation report; it has no behavior."""
+InvalidOutputCategory = Literal[
+    "missing_function_call",
+    "malformed_function_call",
+    "invalid_argument_syntax",
+    "unknown_route",
+    "invalid_arguments",
+]
 
-    schema_version: str = Field(min_length=1)
-    validation: dict[str, Any] | None = None
-    test: dict[str, Any] | None = None
+_INVALID_OUTPUT_CATEGORIES: tuple[InvalidOutputCategory, ...] = (
+    "missing_function_call",
+    "malformed_function_call",
+    "invalid_argument_syntax",
+    "unknown_route",
+    "invalid_arguments",
+)
+_THRESHOLD_NAMES = (
+    "valid_decision_rate",
+    "route_accuracy",
+    "argument_accuracy",
+)
+
+def _same_rate(actual: float, expected: float) -> bool:
+    return math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-12)
+
+
+def _require_rate(rate: float, numerator: int, denominator: int, name: str) -> None:
+    if not _same_rate(rate, numerator / denominator):
+        raise ValueError(f"{name} must equal its count divided by examples")
+
+
+def _require_optional_rate(
+    rate: float | None, numerator: int, denominator: int, name: str
+) -> None:
+    if denominator == 0:
+        if rate is not None:
+            raise ValueError(f"{name} must be null when its denominator is zero")
+        return
+    if rate is None:
+        raise ValueError(f"{name} must be present when its denominator is non-zero")
+    if not _same_rate(rate, numerator / denominator):
+        raise ValueError(f"{name} must equal its count ratio")
+
+
+class EvaluationMetrics(StrictModel):
+    """Aggregate exact semantic-evaluation outcomes."""
+
+    examples: int = Field(ge=1)
+    valid_decisions: int = Field(ge=0)
+    valid_decision_rate: float = Field(ge=0, le=1)
+    route_correct: int = Field(ge=0)
+    route_accuracy: float = Field(ge=0, le=1)
+    argument_correct: int = Field(ge=0)
+    argument_accuracy: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_counts_and_rates(self) -> EvaluationMetrics:
+        if not (
+            self.argument_correct
+            <= self.route_correct
+            <= self.valid_decisions
+            <= self.examples
+        ):
+            raise ValueError(
+                "argument_correct <= route_correct <= valid_decisions <= examples"
+            )
+        _require_rate(
+            self.valid_decision_rate,
+            self.valid_decisions,
+            self.examples,
+            "valid_decision_rate",
+        )
+        _require_rate(
+            self.route_accuracy,
+            self.route_correct,
+            self.examples,
+            "route_accuracy",
+        )
+        _require_rate(
+            self.argument_accuracy,
+            self.argument_correct,
+            self.examples,
+            "argument_accuracy",
+        )
+        return self
+
+
+class RouteMetrics(StrictModel):
+    """Precision, recall, and counts for one registry route."""
+
+    name: str = Field(min_length=1)
+    support: int = Field(ge=0)
+    predictions: int = Field(ge=0)
+    true_positives: int = Field(ge=0)
+    precision: float | None = Field(default=None, ge=0, le=1)
+    recall: float | None = Field(default=None, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_counts_and_rates(self) -> RouteMetrics:
+        if self.true_positives > self.support:
+            raise ValueError("true_positives must not exceed support")
+        if self.true_positives > self.predictions:
+            raise ValueError("true_positives must not exceed predictions")
+        _require_optional_rate(
+            self.precision,
+            self.true_positives,
+            self.predictions,
+            "precision",
+        )
+        _require_optional_rate(
+            self.recall,
+            self.true_positives,
+            self.support,
+            "recall",
+        )
+        return self
+
+
+class ConfusionRow(StrictModel):
+    """Valid predictions for one expected registry route."""
+
+    expected: str = Field(min_length=1)
+    predicted: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_predictions(self) -> ConfusionRow:
+        if any(not name for name in self.predicted):
+            raise ValueError("predicted must not contain an empty route name")
+        if any(count < 0 for count in self.predicted.values()):
+            raise ValueError("predicted counts must be non-negative")
+        return self
+
+
+class InvalidOutputCount(StrictModel):
+    """Count of parser-invalid outputs for one fixed failure category."""
+
+    category: InvalidOutputCategory
+    count: int = Field(ge=0)
+
+
+class RepresentativeError(StrictModel):
+    """The stable first example of one semantic error signature."""
+
+    expected_route: str = Field(min_length=1)
+    predicted_route: str | None = None
+    invalid_category: InvalidOutputCategory | None = None
+    input: str | None = None
+    raw_output: str | None = None
+    detail: str | None = None
+
+    @model_validator(mode="after")
+    def validate_error_kind(self) -> RepresentativeError:
+        if self.predicted_route is None and self.invalid_category is None:
+            raise ValueError(
+                "representative errors require a prediction or invalid category"
+            )
+        if self.predicted_route is not None and self.invalid_category is not None:
+            raise ValueError(
+                "representative errors cannot be both predicted and invalid"
+            )
+        return self
+
+
+class ThresholdResult(StrictModel):
+    """One evaluated inclusive promotion gate."""
+
+    name: Literal[
+        "valid_decision_rate",
+        "route_accuracy",
+        "argument_accuracy",
+    ]
+    minimum: float = Field(ge=0, le=1)
+    actual: float = Field(ge=0, le=1)
+    passed: bool
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> ThresholdResult:
+        if self.passed != (self.actual >= self.minimum):
+            raise ValueError("passed must equal actual >= minimum")
+        return self
+
+
+class EvaluationReport(StrictModel):
+    """Strict Stage-4 semantic quality evidence for one artifact and dataset."""
+
+    schema_version: Literal["1"]
+    artifact: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    registry_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    data: DatasetArtifact
+    config: EvaluationConfig
+    metrics: EvaluationMetrics
+    routes: list[RouteMetrics] = Field(min_length=1)
+    confusion_matrix: list[ConfusionRow] = Field(min_length=1)
+    invalid_outputs: list[InvalidOutputCount] = Field(
+        min_length=len(_INVALID_OUTPUT_CATEGORIES),
+        max_length=len(_INVALID_OUTPUT_CATEGORIES),
+    )
+    representative_errors: list[RepresentativeError]
+    thresholds: list[ThresholdResult] = Field(
+        min_length=len(_THRESHOLD_NAMES),
+        max_length=len(_THRESHOLD_NAMES),
+    )
+    passed: bool
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> EvaluationReport:
+        if self.data.examples != self.metrics.examples:
+            raise ValueError("data.examples must equal metrics.examples")
+
+        route_names = [route.name for route in self.routes]
+        if len(set(route_names)) != len(route_names):
+            raise ValueError("routes must not contain duplicate names")
+        if [row.expected for row in self.confusion_matrix] != route_names:
+            raise ValueError(
+                "confusion_matrix expected routes must match routes in registry order"
+            )
+
+        route_by_name = {route.name: route for route in self.routes}
+        if any(
+            name not in route_by_name
+            for row in self.confusion_matrix
+            for name in row.predicted
+        ):
+            raise ValueError("confusion predictions must name registered routes")
+
+        confusion_by_expected = {
+            row.expected: row.predicted for row in self.confusion_matrix
+        }
+        if sum(route.support for route in self.routes) != self.metrics.examples:
+            raise ValueError("route support must equal metrics.examples")
+        if sum(route.predictions for route in self.routes) != self.metrics.valid_decisions:
+            raise ValueError("route predictions must equal metrics.valid_decisions")
+        if (
+            sum(route.true_positives for route in self.routes)
+            != self.metrics.route_correct
+        ):
+            raise ValueError(
+                "route true_positives must equal metrics.route_correct"
+            )
+
+        confusion_total = sum(
+            sum(row.predicted.values()) for row in self.confusion_matrix
+        )
+        if confusion_total != self.metrics.valid_decisions:
+            raise ValueError(
+                "confusion predictions must equal metrics.valid_decisions"
+            )
+        for route in self.routes:
+            row = confusion_by_expected[route.name]
+            if sum(row.values()) > route.support:
+                raise ValueError(
+                    "confusion row predictions must not exceed route support"
+                )
+            if row.get(route.name, 0) != route.true_positives:
+                raise ValueError(
+                    "confusion diagonal must equal route true_positives"
+                )
+            predictions = sum(
+                row.predicted.get(route.name, 0) for row in self.confusion_matrix
+            )
+            if predictions != route.predictions:
+                raise ValueError(
+                    "confusion prediction columns must equal route predictions"
+                )
+
+        if [item.category for item in self.invalid_outputs] != list(
+            _INVALID_OUTPUT_CATEGORIES
+        ):
+            raise ValueError(
+                "invalid_outputs must contain fixed parser categories in parser order"
+            )
+        if (
+            sum(item.count for item in self.invalid_outputs)
+            != self.metrics.examples - self.metrics.valid_decisions
+        ):
+            raise ValueError(
+                "invalid output counts must equal examples minus valid decisions"
+            )
+
+        signatures: set[
+            tuple[str, str | None, InvalidOutputCategory | None]
+        ] = set()
+        invalid_by_category = {
+            item.category: item.count for item in self.invalid_outputs
+        }
+        for representative in self.representative_errors:
+            if representative.expected_route not in route_by_name:
+                raise ValueError("representative expected_route must be registered")
+            if (
+                representative.predicted_route is not None
+                and representative.predicted_route not in route_by_name
+            ):
+                raise ValueError("representative predicted_route must be registered")
+            if (
+                representative.invalid_category is not None
+                and invalid_by_category[representative.invalid_category] == 0
+            ):
+                raise ValueError(
+                    "representative invalid category must have a non-zero count"
+                )
+            signature = (
+                representative.expected_route,
+                representative.predicted_route,
+                representative.invalid_category,
+            )
+            if signature in signatures:
+                raise ValueError("representative error signatures must be unique")
+            signatures.add(signature)
+            if self.config.redact and any(
+                value is not None
+                for value in (
+                    representative.input,
+                    representative.raw_output,
+                    representative.detail,
+                )
+            ):
+                raise ValueError(
+                    "redacted reports must not retain representative input, raw_output, or detail"
+                )
+
+        if [threshold.name for threshold in self.thresholds] != list(
+            _THRESHOLD_NAMES
+        ):
+            raise ValueError(
+                "thresholds must contain fixed metrics in promotion-gate order"
+            )
+        configured_minimums = {
+            "valid_decision_rate": self.config.thresholds.valid_decision_rate,
+            "route_accuracy": self.config.thresholds.route_accuracy,
+            "argument_accuracy": self.config.thresholds.argument_accuracy,
+        }
+        actuals = {
+            "valid_decision_rate": self.metrics.valid_decision_rate,
+            "route_accuracy": self.metrics.route_accuracy,
+            "argument_accuracy": self.metrics.argument_accuracy,
+        }
+        for threshold in self.thresholds:
+            if not _same_rate(
+                threshold.minimum, configured_minimums[threshold.name]
+            ):
+                raise ValueError("threshold minimum must match config")
+            if not _same_rate(threshold.actual, actuals[threshold.name]):
+                raise ValueError("threshold actual must match metrics")
+        if self.passed != all(threshold.passed for threshold in self.thresholds):
+            raise ValueError("passed must equal all threshold outcomes")
+        return self
 
 
 class TrainingInput(StrictModel):
@@ -281,6 +639,7 @@ class ResolvedTrainingConfig(StrictModel):
     training: TrainingOptions
     lora: ResolvedLoRAConfig
     checkpoints: CheckpointPolicy
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
 
     @model_validator(mode="after")
     def validate_lora_matches_training(self) -> ResolvedTrainingConfig:
