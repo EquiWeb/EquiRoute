@@ -1,0 +1,4 @@
+{"id":"stage5-child-validation-replay-billing-01","input":"I need a receipt for my renewal payment.","route":{"name":"billing_support","arguments":{}}}
+{"id":"stage5-child-validation-replay-technical-01","input":"The dashboard shows a blank page.","route":{"name":"technical_support","arguments":{}}}
+{"id":"stage5-child-validation-replay-account-01","input":"My sign-in link expired before I used it.","route":{"name":"account_support","arguments":{}}}
+{"id":"stage5-child-validation-shipping-01","input":"My delivery is late; can you check it?","route":{"name":"shipping_support","arguments":{}}}

@@ -2,3 +2,4 @@ __pycache__/
 *.py[cod]
 .venv/
 tests/fixtures/stage3/artifacts/
+tests/fixtures/stage5/**/artifacts/

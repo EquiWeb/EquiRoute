@@ -12,7 +12,7 @@ from .dataset import split_dataset, validate_partitions, write_split
 from .evaluation import EvaluationError, evaluate_artifact
 from .errors import EquiRouteError
 from .io import load_route_registry, load_training_config
-from .training import TrainingError, export_router, train_router
+from .training import TrainingError, continue_router, export_router, train_router
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -115,8 +115,12 @@ def continue_training(
     from_artifact: Annotated[Path, typer.Option("--from")],
     config: Annotated[Path, typer.Option()],
 ) -> None:
-    """Continue adapter training (available in Stage 5)."""
-    _unavailable("Stage 5")
+    """Continue adapter training from a completed artifact."""
+    try:
+        continue_router(from_artifact, config)
+    except TrainingError as error:
+        typer.echo(f"Continuation failed: {error}", err=True)
+        raise typer.Exit(code=1) from error
 
 
 @app.command()

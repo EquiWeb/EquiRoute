@@ -17,11 +17,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .dataset import _file_fingerprint, _registry_fingerprint, validate_partitions
+from .dataset import (
+    _file_fingerprint,
+    _normalize_input,
+    _registry_fingerprint,
+    validate_dataset,
+    validate_partitions,
+)
 from .errors import EquiRouteError
 from .functiongemma import compile_functiongemma
 from .hardware import TrainingCapability, select_training_capability
-from .io import iter_examples, load_route_registry, load_training_config
+from .io import iter_examples, load_examples, load_route_registry, load_training_config
 from .model import (
     FUNCTIONGEMMA_LORA_BIAS,
     FUNCTIONGEMMA_LORA_DROPOUT,
@@ -35,7 +41,10 @@ from .schemas import (
     ArtifactHashes,
     CheckpointPolicy,
     CheckpointSelection,
+    DatasetArtifact,
+    ParentArtifact,
     PartitionEvaluation,
+    RegistryChange,
     ResolvedLoRAConfig,
     ResolvedTrainingConfig,
     TrainingArtifact,
@@ -74,6 +83,24 @@ class _PreparedRun:
     manifest: TrainingManifest
 
 
+
+@dataclass(frozen=True, slots=True)
+class _ContinuationPreflight:
+    config: Any
+    child_registry: Any
+    child_sources: Mapping[str, Path]
+    output_directory: Path
+    parent_directory: Path
+    parent_adapter_directory: Path
+    parent_manifest: TrainingManifest
+    parent_registry: Any
+    parent: ParentArtifact
+    registry_change: RegistryChange
+    regression_examples: list[Any]
+    regression_data: DatasetArtifact
+    child_test_examples: list[Any]
+    child_test_data: DatasetArtifact
+
 _MARKER = "<start_function_call>"
 _IGNORED_LABEL = -100
 _SCHEMA_VERSION = "1"
@@ -89,6 +116,11 @@ def train_router(config_path: str | Path, *, resume: bool = False) -> TrainingAr
 
     config_source = _as_path(config_path, "training configuration")
     config, registry, sources, output_directory = _load_local_inputs(config_source)
+    if config.continuation is not None:
+        raise TrainingError(
+            "Training configurations with continuation settings must use "
+            "`equiroute continue --from PARENT --config CONFIG`."
+        )
 
     if resume:
         _require_resume_directory(output_directory)
@@ -118,44 +150,16 @@ def train_router(config_path: str | Path, *, resume: bool = False) -> TrainingAr
         _initialize_artifact(output_directory, config_source, sources["routes"], prepared.manifest)
 
     try:
-        trainer = _build_trainer(
+        selection, evaluation = _run_stage3_training(
             stack,
             adapter_model,
             tokenizer,
-            prepared.partitions,
+            prepared,
             config,
             capability,
             output_directory,
+            checkpoint=checkpoint,
         )
-        trainer.train(resume_from_checkpoint=checkpoint)
-
-        validation_metrics = trainer.evaluate(
-            eval_dataset=_dataset_for(stack.torch, prepared.partitions["validation"].records),
-            metric_key_prefix="eval",
-        )
-        test_metrics = trainer.evaluate(
-            eval_dataset=_dataset_for(stack.torch, prepared.partitions["test"].records),
-            metric_key_prefix="test",
-        )
-        trainer.save_state()
-
-        adapter_directory = _adapter_directory(output_directory)
-        adapter_directory.mkdir(parents=True, exist_ok=True)
-        adapter_model.save_pretrained(adapter_directory, safe_serialization=True)
-
-        selection = _checkpoint_selection(trainer, output_directory)
-        evaluation = TrainingEvaluation(
-            validation=PartitionEvaluation(
-                examples=len(prepared.partitions["validation"].records),
-                loss=_required_loss(validation_metrics, "eval_loss"),
-            ),
-            test=PartitionEvaluation(
-                examples=len(prepared.partitions["test"].records),
-                loss=_required_loss(test_metrics, "test_loss"),
-            ),
-        )
-
-        _write_json(_evaluation_path(output_directory), evaluation.model_dump(mode="json"))
         _save_merged_model(adapter_model, tokenizer, output_directory)
         completed = prepared.manifest.model_copy(
             update={
@@ -175,6 +179,112 @@ def train_router(config_path: str | Path, *, resume: bool = False) -> TrainingAr
         ) from error
 
     return _artifact_for(output_directory, completed)
+
+
+def continue_router(
+    from_artifact: TrainingArtifact | str | Path, config_path: str | Path
+) -> TrainingArtifact:
+    """Train a child adapter from a verified completed parent adapter artifact."""
+
+    config_source = _as_path(config_path, "continuation configuration")
+    preflight = _preflight_continuation(from_artifact, config_source)
+
+    with tempfile.TemporaryDirectory(prefix="equiroute-continuation-adapter-") as temporary:
+        parent_adapter_snapshot = _snapshot_parent_adapter(
+            preflight.parent_adapter_directory,
+            preflight.parent_manifest,
+            Path(temporary),
+        )
+        stack = _load_training_stack()
+        stack.transformers.set_seed(preflight.config.training.seed)
+        capability = select_training_capability(stack.torch)
+        tokenizer = _load_tokenizer(stack)
+        prepared = _prepare_run(
+            preflight.config,
+            preflight.child_registry,
+            preflight.child_sources,
+            tokenizer,
+            capability,
+        )
+        model = _load_base_model(stack, capability)
+        adapter_model = _load_parent_adapter(
+            stack,
+            model,
+            parent_adapter_snapshot,
+            is_trainable=True,
+        )
+
+        _initialize_artifact(
+            preflight.output_directory,
+            config_source,
+            preflight.child_sources["routes"],
+            prepared.manifest,
+        )
+        try:
+            selection, evaluation = _run_stage3_training(
+                stack,
+                adapter_model,
+                tokenizer,
+                prepared,
+                preflight.config,
+                capability,
+                preflight.output_directory,
+                checkpoint=None,
+            )
+            child_semantic = _evaluate_child_semantics(
+                stack,
+                capability,
+                tokenizer,
+                adapter_model,
+                preflight,
+            )
+            if not child_semantic.passed:
+                raise TrainingError(
+                    "Continuation child semantic evaluation did not pass its configured "
+                    "quality gate; the child artifact remains incomplete."
+                )
+            _require_added_route_recall(child_semantic, preflight.registry_change)
+
+            comparison = _evaluate_continuation(
+                stack,
+                capability,
+                tokenizer,
+                adapter_model,
+                preflight,
+                parent_adapter_snapshot,
+            )
+            _write_json(
+                _continuation_evaluation_path(preflight.output_directory),
+                comparison.model_dump(mode="json"),
+            )
+            if not comparison.passed:
+                raise TrainingError(
+                    "Continuation regression evaluation did not pass its route or argument "
+                    "accuracy gate; the child artifact remains incomplete."
+                )
+
+            _save_merged_model(adapter_model, tokenizer, preflight.output_directory)
+            completed = prepared.manifest.model_copy(
+                update={
+                    "status": "completed",
+                    "checkpoint_selection": selection,
+                    "evaluation": evaluation,
+                    "artifacts": _artifact_hashes(preflight.output_directory),
+                    "parent": preflight.parent,
+                    "registry_change": preflight.registry_change,
+                    "comparative_evaluation": comparison,
+                }
+            )
+            _write_manifest(_manifest_path(preflight.output_directory), completed)
+        except TrainingError:
+            raise
+        except Exception as error:
+            raise TrainingError(
+                "Continuation did not complete. Its child output remains incomplete after: "
+                f"{error}"
+            ) from error
+
+        return _artifact_for(preflight.output_directory, completed)
 
 
 def export_router(artifact: TrainingArtifact | str | Path) -> TrainingArtifact:
@@ -258,6 +368,299 @@ def _load_local_inputs(
     return config, registry, sources, output_directory
 
 
+
+
+def _preflight_continuation(
+    from_artifact: TrainingArtifact | str | Path, config_source: Path
+) -> _ContinuationPreflight:
+    """Validate every local continuation input before optional ML imports."""
+
+    config, child_registry, child_sources, output_directory = _load_local_inputs(config_source)
+    if config.continuation is None:
+        raise TrainingError(
+            "Continuation requires a top-level continuation configuration with a "
+            "regression dataset."
+        )
+    if output_directory.exists():
+        raise TrainingError(
+            f"Output directory {output_directory} already exists. "
+            "Choose a new output.directory for the child artifact."
+        )
+
+    parent_directory = _continuation_parent_directory(from_artifact)
+    parent_manifest_path = _manifest_path(parent_directory)
+    parent_manifest, manifest_sha256 = _read_manifest_with_sha256(parent_manifest_path)
+    if parent_manifest.status != "completed":
+        raise TrainingError(
+            f"Parent artifact {parent_directory} is {parent_manifest.status}, not completed."
+        )
+    if parent_manifest.artifacts is None:
+        raise TrainingError(
+            f"Completed parent artifact {parent_directory} has no retained artifact hashes."
+        )
+
+    parent_registry = _load_parent_registry(parent_directory)
+    parent_fingerprint = _registry_fingerprint(parent_registry)
+    if parent_fingerprint != parent_manifest.inputs.route_registry_fingerprint:
+        raise TrainingError(
+            f"Parent artifact {parent_directory} route registry fingerprint "
+            f"{parent_fingerprint} does not match its manifest fingerprint "
+            f"{parent_manifest.inputs.route_registry_fingerprint}."
+        )
+    _verify_parent_model_identity(parent_directory, parent_manifest, config)
+    _verify_continuation_lora(parent_manifest, config)
+
+    parent_adapter_directory = _adapter_directory(parent_directory)
+    if not parent_adapter_directory.is_dir():
+        raise TrainingError(
+            f"Parent artifact {parent_directory} has no retained adapter at "
+            f"{parent_adapter_directory}."
+        )
+    _verify_retained_adapter(parent_adapter_directory, parent_manifest)
+
+    registry_change = _continuation_registry_change(
+        parent_registry,
+        child_registry,
+        parent_fingerprint,
+    )
+    regression_examples, regression_data = _continuation_regression_data(
+        config_source.parent,
+        config.continuation.regression,
+        child_sources,
+        parent_registry,
+        child_registry,
+    )
+    child_test_examples, child_test_data = _continuation_child_test_data(
+        child_sources["test"], child_registry
+    )
+
+    return _ContinuationPreflight(
+        config=config,
+        child_registry=child_registry,
+        child_sources=child_sources,
+        output_directory=output_directory,
+        parent_directory=parent_directory,
+        parent_adapter_directory=parent_adapter_directory,
+        parent_manifest=parent_manifest,
+        parent_registry=parent_registry,
+        parent=ParentArtifact(
+            directory=str(parent_directory),
+            manifest_sha256=manifest_sha256,
+            adapter=parent_manifest.artifacts.adapter,
+            registry_fingerprint=parent_fingerprint,
+        ),
+        registry_change=registry_change,
+        regression_examples=regression_examples,
+        regression_data=regression_data,
+        child_test_examples=child_test_examples,
+        child_test_data=child_test_data,
+    )
+
+def _snapshot_parent_adapter(
+    parent_adapter_directory: Path,
+    parent_manifest: TrainingManifest,
+    temporary_directory: Path,
+) -> Path:
+    """Copy a verified parent adapter into storage owned by this continuation."""
+
+    snapshot = temporary_directory / "continuation" / "adapter"
+    try:
+        shutil.copytree(parent_adapter_directory, snapshot)
+    except OSError as error:
+        raise TrainingError(
+            f"Could not snapshot retained parent adapter {parent_adapter_directory}: {error}"
+        ) from error
+    _verify_retained_adapter(snapshot, parent_manifest)
+    return snapshot
+
+
+def _continuation_parent_directory(
+    from_artifact: TrainingArtifact | str | Path,
+) -> Path:
+    if isinstance(from_artifact, TrainingArtifact):
+        directory = Path(from_artifact.directory)
+    elif isinstance(from_artifact, (str, Path)):
+        directory = Path(from_artifact)
+    else:
+        raise TrainingError(
+            "Continuation parent must be a TrainingArtifact or an artifact directory path."
+        )
+    if not directory.is_dir():
+        raise TrainingError(
+            f"Continuation parent artifact directory {directory} does not exist or is not a directory."
+        )
+    return directory.resolve()
+
+
+def _read_manifest_with_sha256(path: Path) -> tuple[TrainingManifest, str]:
+    try:
+        content = path.read_bytes()
+        manifest = TrainingManifest.model_validate(json.loads(content))
+    except (OSError, ValueError, TypeError) as error:
+        raise TrainingError(
+            f"Could not read valid EquiRoute training manifest {path}: {error}"
+        ) from error
+    return manifest, hashlib.sha256(content).hexdigest()
+
+
+def _load_parent_registry(parent_directory: Path) -> Any:
+    source = _provenance_directory(parent_directory) / "routes.yaml"
+    try:
+        return load_route_registry(source)
+    except EquiRouteError as error:
+        raise TrainingError(
+            f"Could not load parent artifact route registry {source}: {error}"
+        ) from error
+
+
+def _verify_parent_model_identity(
+    parent_directory: Path, parent_manifest: TrainingManifest, child_config: Any
+) -> None:
+    source = _provenance_directory(parent_directory) / "run-config.yaml"
+    try:
+        parent_config = load_training_config(source)
+    except EquiRouteError as error:
+        raise TrainingError(
+            f"Could not load parent artifact run configuration {source}: {error}"
+        ) from error
+
+    if parent_config.model != parent_manifest.resolved_config.model:
+        raise TrainingError(
+            f"Parent artifact {parent_directory} run configuration model does not match "
+            "its completed manifest."
+        )
+    if child_config.model != parent_manifest.resolved_config.model:
+        raise TrainingError(
+            "Child continuation model identity must exactly match the completed parent "
+            "artifact model and revision."
+        )
+
+
+def _verify_continuation_lora(parent_manifest: TrainingManifest, child_config: Any) -> None:
+    parent_lora = parent_manifest.resolved_config.lora
+    if (
+        child_config.training.lora_rank != parent_lora.rank
+        or child_config.training.lora_alpha != parent_lora.alpha
+    ):
+        raise TrainingError(
+            "Child continuation LoRA rank and alpha must match the retained parent adapter."
+        )
+
+
+def _continuation_registry_change(
+    parent_registry: Any, child_registry: Any, parent_fingerprint: str
+) -> RegistryChange:
+    parent_routes = [route.model_dump(mode="json") for route in parent_registry.routes]
+    child_routes = [route.model_dump(mode="json") for route in child_registry.routes]
+    parent_count = len(parent_routes)
+    if child_routes[:parent_count] != parent_routes:
+        raise TrainingError(
+            "Child route registry must retain the parent routes as an exact ordered prefix."
+        )
+    if len(child_routes) == parent_count:
+        raise TrainingError("Child route registry must add at least one route.")
+
+    return RegistryChange(
+        parent_registry_fingerprint=parent_fingerprint,
+        child_registry_fingerprint=_registry_fingerprint(child_registry),
+        retained_route_names=[route.name for route in parent_registry.routes],
+        added_routes=list(child_registry.routes[parent_count:]),
+    )
+
+
+def _continuation_regression_data(
+    base_directory: Path,
+    configured: str,
+    child_sources: Mapping[str, Path],
+    parent_registry: Any,
+    child_registry: Any,
+) -> tuple[list[Any], DatasetArtifact]:
+    source = _resolve_config_path(base_directory, configured)
+    if not source.is_file():
+        raise TrainingError(
+            f"Continuation regression dataset {source} does not exist or is not a file."
+        )
+    for partition, partition_source in child_sources.items():
+        if source == partition_source:
+            raise TrainingError(
+                f"Continuation regression dataset {source} must not alias the child "
+                f"{partition} partition."
+            )
+
+    try:
+        report = validate_dataset(source, parent_registry)
+        examples = load_examples(source, parent_registry)
+        fingerprint = _file_fingerprint(source, "continuation regression data")
+        _require_regression_disjoint(
+            source,
+            examples,
+            child_sources,
+            child_registry,
+        )
+    except EquiRouteError as error:
+        raise TrainingError(
+            f"Cannot prepare validated continuation regression data: {error}"
+        ) from error
+    if report.example_count == 0:
+        raise TrainingError(
+            f"Continuation regression dataset {source} is empty; provide old-route examples."
+        )
+    missing = [
+        distribution.name
+        for distribution in report.route_distribution
+        if distribution.total == 0
+    ]
+    if missing:
+        raise TrainingError(
+            "Continuation regression dataset must cover every parent route; missing: "
+            + ", ".join(missing)
+            + "."
+        )
+    return examples, DatasetArtifact(
+        examples=len(examples),
+        fingerprint=fingerprint,
+    )
+
+def _continuation_child_test_data(
+    source: Path, registry: Any
+) -> tuple[list[Any], DatasetArtifact]:
+    """Load the already partition-validated held-out child test evidence."""
+
+    try:
+        examples = load_examples(source, registry)
+        fingerprint = _file_fingerprint(source, "continuation child test data")
+    except EquiRouteError as error:
+        raise TrainingError(
+            f"Cannot prepare validated continuation child test data: {error}"
+        ) from error
+    return examples, DatasetArtifact(examples=len(examples), fingerprint=fingerprint)
+
+
+
+
+def _require_regression_disjoint(
+    regression_source: Path,
+    regression_examples: Sequence[Any],
+    child_sources: Mapping[str, Path],
+    child_registry: Any,
+) -> None:
+    regression_ids = {example.id for example in regression_examples}
+    regression_inputs = {_normalize_input(example.input) for example in regression_examples}
+    for partition in ("train", "validation", "test"):
+        source = child_sources[partition]
+        for loaded in iter_examples(source, child_registry):
+            example = loaded.example
+            if example.id in regression_ids:
+                raise TrainingError(
+                    f"Continuation regression dataset {regression_source} reuses example "
+                    f"id {example.id!r} from child {partition} partition {source}."
+                )
+            if _normalize_input(example.input) in regression_inputs:
+                raise TrainingError(
+                    f"Continuation regression dataset {regression_source} reuses an input "
+                    f"from child {partition} partition {source}."
+                )
+
 def _prepare_run(
     config: Any,
     registry: Any,
@@ -312,6 +715,59 @@ def _prepare_run(
         ),
     )
     return _PreparedRun(partitions=partitions, manifest=manifest)
+
+
+def _run_stage3_training(
+    stack: _TrainingStack,
+    adapter_model: Any,
+    tokenizer: Any,
+    prepared: _PreparedRun,
+    config: Any,
+    capability: TrainingCapability,
+    output_directory: Path,
+    *,
+    checkpoint: str | None,
+) -> tuple[CheckpointSelection, TrainingEvaluation]:
+    """Run the shared Stage-3 trainer and retain its adapter and loss evidence."""
+
+    trainer = _build_trainer(
+        stack,
+        adapter_model,
+        tokenizer,
+        prepared.partitions,
+        config,
+        capability,
+        output_directory,
+    )
+    trainer.train(resume_from_checkpoint=checkpoint)
+
+    validation_metrics = trainer.evaluate(
+        eval_dataset=_dataset_for(stack.torch, prepared.partitions["validation"].records),
+        metric_key_prefix="eval",
+    )
+    test_metrics = trainer.evaluate(
+        eval_dataset=_dataset_for(stack.torch, prepared.partitions["test"].records),
+        metric_key_prefix="test",
+    )
+    trainer.save_state()
+
+    adapter_directory = _adapter_directory(output_directory)
+    adapter_directory.mkdir(parents=True, exist_ok=True)
+    adapter_model.save_pretrained(adapter_directory, safe_serialization=True)
+
+    selection = _checkpoint_selection(trainer, output_directory)
+    evaluation = TrainingEvaluation(
+        validation=PartitionEvaluation(
+            examples=len(prepared.partitions["validation"].records),
+            loss=_required_loss(validation_metrics, "eval_loss"),
+        ),
+        test=PartitionEvaluation(
+            examples=len(prepared.partitions["test"].records),
+            loss=_required_loss(test_metrics, "test_loss"),
+        ),
+    )
+    _write_json(_evaluation_path(output_directory), evaluation.model_dump(mode="json"))
+    return selection, evaluation
 
 
 def _prepare_partition(
@@ -523,6 +979,123 @@ def _apply_lora(stack: _TrainingStack, model: Any, config: Any) -> Any:
             "Could not configure the FunctionGemma q_proj/v_proj LoRA adapter: "
             f"{error}"
         ) from error
+
+
+def _load_parent_adapter(
+    stack: _TrainingStack,
+    base_model: Any,
+    adapter_directory: Path,
+    *,
+    is_trainable: bool,
+) -> Any:
+    try:
+        return stack.peft.PeftModel.from_pretrained(
+            base_model,
+            adapter_directory,
+            is_trainable=is_trainable,
+        )
+    except Exception as error:
+        raise TrainingError(
+            f"Could not load retained adapter {adapter_directory} onto the pinned "
+            f"{FUNCTIONGEMMA_MODEL_ID} base model: {error}"
+        ) from error
+
+def _evaluate_child_semantics(
+    stack: _TrainingStack,
+    capability: TrainingCapability,
+    tokenizer: Any,
+    child_model: Any,
+    preflight: _ContinuationPreflight,
+) -> Any:
+    """Evaluate the trained child on its held-out partition and persist Stage-4 evidence."""
+
+    from .evaluation import evaluate_loaded_artifact
+
+    return evaluate_loaded_artifact(
+        child_model,
+        tokenizer,
+        torch=stack.torch,
+        device=capability.device,
+        scoring_registry=preflight.child_registry,
+        prompt_registry=preflight.child_registry,
+        examples=preflight.child_test_examples,
+        data=preflight.child_test_data,
+        config=preflight.config.evaluation,
+        artifact=str(preflight.output_directory),
+        persist_path=_semantic_evaluation_path(preflight.output_directory),
+    )
+
+
+def _require_added_route_recall(report: Any, registry_change: RegistryChange) -> None:
+    """Require every newly introduced route to be selected on all held-out examples."""
+
+    recalls = {route.name: route.recall for route in report.routes}
+    failed = [
+        route.name
+        for route in registry_change.added_routes
+        if recalls.get(route.name) != 1.0
+    ]
+    if failed:
+        raise TrainingError(
+            "Continuation added-route semantic evaluation did not select every held-out "
+            "added-route example for: "
+            + ", ".join(failed)
+            + "; the child artifact remains incomplete."
+        )
+
+
+
+def _evaluate_continuation(
+    stack: _TrainingStack,
+    capability: TrainingCapability,
+    tokenizer: Any,
+    child_model: Any,
+    preflight: _ContinuationPreflight,
+    parent_adapter_directory: Path,
+) -> Any:
+    """Evaluate parent and child adapters on the same parent-registry prompts."""
+
+    from .evaluation import (
+        compare_continuation_evaluations,
+        evaluate_loaded_artifact,
+    )
+
+    parent_base = _load_base_model(stack, capability)
+    parent_model = _load_parent_adapter(
+        stack,
+        parent_base,
+        parent_adapter_directory,
+        is_trainable=False,
+    )
+    parent_report = evaluate_loaded_artifact(
+        parent_model,
+        tokenizer,
+        torch=stack.torch,
+        device=capability.device,
+        scoring_registry=preflight.parent_registry,
+        prompt_registry=preflight.parent_registry,
+        examples=preflight.regression_examples,
+        data=preflight.regression_data,
+        config=preflight.config.evaluation,
+        artifact=str(preflight.parent_directory),
+    )
+    child_report = evaluate_loaded_artifact(
+        child_model,
+        tokenizer,
+        torch=stack.torch,
+        device=capability.device,
+        scoring_registry=preflight.child_registry,
+        prompt_registry=preflight.parent_registry,
+        examples=preflight.regression_examples,
+        data=preflight.regression_data,
+        config=preflight.config.evaluation,
+        artifact=str(preflight.output_directory),
+    )
+    return compare_continuation_evaluations(
+        parent_report,
+        child_report,
+        preflight.config.continuation,
+    )
 
 
 def _build_trainer(
@@ -897,6 +1470,14 @@ def _manifest_path(output_directory: Path) -> Path:
 
 def _evaluation_path(output_directory: Path) -> Path:
     return _provenance_directory(output_directory) / "evaluation.json"
+
+
+def _continuation_evaluation_path(output_directory: Path) -> Path:
+    return _provenance_directory(output_directory) / "continuation-evaluation.json"
+
+
+def _semantic_evaluation_path(output_directory: Path) -> Path:
+    return _provenance_directory(output_directory) / "semantic-evaluation.json"
 
 
 def _trainer_state_directory(output_directory: Path) -> Path:

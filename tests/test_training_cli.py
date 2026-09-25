@@ -6,15 +6,19 @@ import equiroute.cli as cli
 from equiroute.training import TrainingError
 
 
-def test_training_command_help_exposes_stage_three_arguments() -> None:
+def test_training_command_help_exposes_training_arguments() -> None:
     runner = CliRunner()
 
     train_help = runner.invoke(cli.app, ["train", "--help"])
+    continue_help = runner.invoke(cli.app, ["continue", "--help"])
     export_help = runner.invoke(cli.app, ["export", "--help"])
 
     assert train_help.exit_code == 0
     assert "config" in train_help.output
     assert "--resume" in train_help.output
+    assert continue_help.exit_code == 0
+    assert "--from" in continue_help.output
+    assert "--config" in continue_help.output
     assert export_help.exit_code == 0
     assert "artifact" in export_help.output
     assert "--format" in export_help.output
@@ -98,10 +102,38 @@ def test_export_reports_actionable_public_api_failures(monkeypatch, tmp_path) ->
     assert "artifact has no retained adapter" in result.output
 
 
-def test_continue_remains_unavailable() -> None:
+def test_continue_forwards_parent_artifact_and_config_to_public_api(monkeypatch, tmp_path) -> None:
+    parent = tmp_path / "parent"
+    config = tmp_path / "config.yaml"
+    calls: list[tuple[Path, Path]] = []
+
+    def fake_continue_router(from_artifact: Path, config_path: Path):
+        calls.append((from_artifact, config_path))
+        return object()
+
+    monkeypatch.setattr(cli, "continue_router", fake_continue_router)
+
     result = CliRunner().invoke(
-        cli.app, ["continue", "--from", "adapter", "--config", "config.yaml"]
+        cli.app, ["continue", "--from", str(parent), "--config", str(config)]
     )
 
-    assert result.exit_code == 2
-    assert result.output == "This command is not available until Stage 5.\n"
+    assert result.exit_code == 0
+    assert calls == [(parent, config)]
+
+
+def test_continue_reports_actionable_public_api_failures(monkeypatch, tmp_path) -> None:
+    parent = tmp_path / "parent"
+    config = tmp_path / "config.yaml"
+
+    def fake_continue_router(from_artifact: Path, config_path: Path):
+        raise TrainingError("parent artifact has no retained adapter")
+
+    monkeypatch.setattr(cli, "continue_router", fake_continue_router)
+
+    result = CliRunner().invoke(
+        cli.app, ["continue", "--from", str(parent), "--config", str(config)]
+    )
+
+    assert result.exit_code == 1
+    assert "Continuation failed:" in result.output
+    assert "parent artifact has no retained adapter" in result.output

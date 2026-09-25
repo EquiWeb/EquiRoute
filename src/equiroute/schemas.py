@@ -143,6 +143,16 @@ class EvaluationConfig(StrictModel):
     thresholds: EvaluationThresholds = Field(default_factory=EvaluationThresholds)
 
 
+class ContinuationConfig(StrictModel):
+    """Regression gate configuration for a child router."""
+
+    regression: str = Field(min_length=1)
+    max_route_accuracy_drop: float = Field(default=0.0, ge=0, le=1)
+    max_argument_accuracy_drop: float = Field(default=0.0, ge=0, le=1)
+
+
+
+
 class TrainingConfig(StrictModel):
     model: ModelConfig
     routes: str = Field(min_length=1)
@@ -150,6 +160,8 @@ class TrainingConfig(StrictModel):
     training: TrainingOptions
     output: OutputConfig
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
+    continuation: ContinuationConfig | None = None
+
 
 class RouteDistribution(StrictModel):
     """Counts for one registry route across Stage 1 dataset partitions."""
@@ -696,6 +708,103 @@ class ArtifactHashes(StrictModel):
     adapter: list[ArtifactFile] = Field(min_length=1)
 
 
+class ParentArtifact(StrictModel):
+    """Immutable provenance retained from the artifact continued from."""
+
+    directory: str = Field(min_length=1)
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    adapter: list[ArtifactFile] = Field(min_length=1)
+    registry_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class RegistryChange(StrictModel):
+    """Ordered route-registry delta from a parent artifact to its child."""
+
+    parent_registry_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    child_registry_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    retained_route_names: list[str] = Field(min_length=1)
+    added_routes: list[Route] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_route_delta(self) -> RegistryChange:
+        retained_names = self.retained_route_names
+        if any(not name for name in retained_names):
+            raise ValueError("retained_route_names must not contain an empty name")
+        if len(set(retained_names)) != len(retained_names):
+            raise ValueError("retained_route_names must not contain duplicates")
+
+        added_names = [route.name for route in self.added_routes]
+        if len(set(added_names)) != len(added_names):
+            raise ValueError("added_routes must not contain duplicate names")
+        if set(retained_names) & set(added_names):
+            raise ValueError("added_routes must not repeat retained route names")
+        return self
+
+
+class ComparativeEvaluation(StrictModel):
+    """Regression evidence comparing a child router with its parent."""
+
+    regression_data: DatasetArtifact
+    parent: EvaluationReport
+    child: EvaluationReport
+    old_route_names: list[str] = Field(min_length=1)
+    max_route_accuracy_drop: float = Field(ge=0, le=1)
+    route_accuracy_drop: float
+    max_argument_accuracy_drop: float = Field(ge=0, le=1)
+    argument_accuracy_drop: float
+    passed: bool
+
+    @model_validator(mode="after")
+    def validate_comparison(self) -> ComparativeEvaluation:
+        if (
+            self.parent.data != self.regression_data
+            or self.child.data != self.regression_data
+        ):
+            raise ValueError(
+                "parent and child reports must evaluate the regression_data artifact"
+            )
+
+        parent_names = [route.name for route in self.parent.routes]
+        child_names = [route.name for route in self.child.routes]
+        if len(set(self.old_route_names)) != len(self.old_route_names):
+            raise ValueError("old_route_names must not contain duplicates")
+        if parent_names != self.old_route_names:
+            raise ValueError("old_route_names must match parent report route order")
+        if child_names[: len(self.old_route_names)] != self.old_route_names:
+            raise ValueError(
+                "child report routes must begin with old_route_names in parent order"
+            )
+
+        route_drop = (
+            self.parent.metrics.route_accuracy - self.child.metrics.route_accuracy
+        )
+        if not _same_rate(self.route_accuracy_drop, route_drop):
+            raise ValueError(
+                "route_accuracy_drop must equal parent route_accuracy minus child route_accuracy"
+            )
+        argument_drop = (
+            self.parent.metrics.argument_accuracy
+            - self.child.metrics.argument_accuracy
+        )
+        if not _same_rate(self.argument_accuracy_drop, argument_drop):
+            raise ValueError(
+                "argument_accuracy_drop must equal parent argument_accuracy minus child argument_accuracy"
+            )
+
+        expected_passed = (
+            self.parent.passed
+            and self.child.passed
+            and self.route_accuracy_drop <= self.max_route_accuracy_drop
+            and self.argument_accuracy_drop <= self.max_argument_accuracy_drop
+        )
+        if self.passed != expected_passed:
+            raise ValueError(
+                "passed must equal report promotion outcomes and allowed accuracy drops"
+            )
+        return self
+
+
+
 class PartitionEvaluation(StrictModel):
     """Evaluation metadata recorded for one fixed dataset partition."""
 
@@ -722,6 +831,10 @@ class TrainingManifest(StrictModel):
     checkpoint_selection: CheckpointSelection | None = None
     evaluation: TrainingEvaluation | None = None
     artifacts: ArtifactHashes | None = None
+    parent: ParentArtifact | None = None
+    registry_change: RegistryChange | None = None
+    comparative_evaluation: ComparativeEvaluation | None = None
+
 
     @model_validator(mode="after")
     def validate_completion_details(self) -> TrainingManifest:
@@ -733,6 +846,62 @@ class TrainingManifest(StrictModel):
             raise ValueError(
                 "completed training manifests require checkpoint, evaluation, and hashes"
             )
+
+        lineage = (
+            self.parent,
+            self.registry_change,
+            self.comparative_evaluation,
+        )
+        if any(item is None for item in lineage) and any(
+            item is not None for item in lineage
+        ):
+            raise ValueError(
+                "parent, registry_change, and comparative_evaluation must be all present or all absent"
+            )
+        if self.parent is not None:
+            assert self.registry_change is not None
+            assert self.comparative_evaluation is not None
+            if (
+                self.registry_change.child_registry_fingerprint
+                != self.inputs.route_registry_fingerprint
+            ):
+                raise ValueError(
+                    "child inputs route_registry_fingerprint must match registry_change"
+                )
+            if (
+                self.registry_change.parent_registry_fingerprint
+                != self.parent.registry_fingerprint
+            ):
+                raise ValueError(
+                    "parent registry_fingerprint must match registry_change"
+                )
+            if (
+                self.comparative_evaluation.parent.registry_fingerprint
+                != self.parent.registry_fingerprint
+                or self.comparative_evaluation.child.registry_fingerprint
+                != self.inputs.route_registry_fingerprint
+            ):
+                raise ValueError(
+                    "comparative report registry fingerprints must match parent and child provenance"
+                )
+            if (
+                self.comparative_evaluation.old_route_names
+                != self.registry_change.retained_route_names
+            ):
+                raise ValueError(
+                    "comparative old_route_names must match retained_route_names"
+                )
+            expected_child_routes = (
+                self.registry_change.retained_route_names
+                + [route.name for route in self.registry_change.added_routes]
+            )
+            actual_child_routes = [
+                route.name for route in self.comparative_evaluation.child.routes
+            ]
+            if actual_child_routes != expected_child_routes:
+                raise ValueError(
+                    "child report routes must match retained and added routes in registry order"
+                )
         return self
 
 

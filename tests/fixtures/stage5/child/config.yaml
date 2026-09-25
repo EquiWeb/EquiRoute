@@ -1,0 +1,33 @@
+# Manual model-extra continuation smoke fixture; do not add it to the standard pytest workload.
+model:
+  base_model: google/functiongemma-270m-it
+  revision: 39eccb091651513a5dfb56892d3714c1b5b8276c
+routes: routes.yaml
+data:
+  train: train.jsonl
+  validation: validation.jsonl
+  test: test.jsonl
+training:
+  seed: 42
+  epochs: 8
+  learning_rate: 0.0002
+  batch_size: 4
+  gradient_accumulation_steps: 1
+  lora_rank: 8
+  lora_alpha: 16
+  max_sequence_length: 512
+continuation:
+  regression: regression.jsonl
+  max_route_accuracy_drop: 0.33333333333333337
+  max_argument_accuracy_drop: 0.33333333333333337
+evaluation:
+  arguments: exact
+  redact: false
+  max_new_tokens: 128
+  thresholds:
+    valid_decision_rate: 0.6666666666666666
+    route_accuracy: 0.6666666666666666
+    argument_accuracy: 0.6666666666666666
+output:
+  directory: artifacts/stage5-child-smoke-v2
+  export: merged_huggingface

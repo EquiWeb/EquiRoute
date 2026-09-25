@@ -1,0 +1,29 @@
+routes:
+  - name: billing_support
+    description: Billing, invoices, refunds, payment failures, and account charges.
+    parameters:
+      type: object
+      properties: {}
+      required: []
+      additionalProperties: false
+  - name: technical_support
+    description: Product errors, configuration issues, and integration failures.
+    parameters:
+      type: object
+      properties: {}
+      required: []
+      additionalProperties: false
+  - name: account_support
+    description: Account access, profile, and sign-in assistance.
+    parameters:
+      type: object
+      properties: {}
+      required: []
+      additionalProperties: false
+  - name: shipping_support
+    description: Delivery tracking, shipping delays, damaged parcels, and address changes.
+    parameters:
+      type: object
+      properties: {}
+      required: []
+      additionalProperties: false

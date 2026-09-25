@@ -20,7 +20,9 @@ from .hardware import select_training_capability
 from .io import load_examples, load_route_registry, load_training_config
 from .output import InvalidOutput, parse_functiongemma_completion
 from .schemas import (
+    ComparativeEvaluation,
     ConfusionRow,
+    ContinuationConfig,
     DatasetArtifact,
     Example,
     EvaluationConfig,
@@ -244,23 +246,129 @@ def evaluate_artifact(
             f"Exported model {model_directory} does not match artifact provenance: {error}"
         ) from error
 
+    return _evaluate_artifact_inputs(
+        model_directory,
+        registry=registry,
+        examples=examples,
+        data=provenance,
+        config=manifest.resolved_config.evaluation,
+        artifact=str(directory),
+        persist_path=directory / _REPORT_PATH,
+    )
+
+
+def _evaluate_artifact_inputs(
+    model_directory: Path,
+    *,
+    registry: RouteRegistry,
+    examples: Sequence[Example],
+    data: DatasetArtifact,
+    config: EvaluationConfig,
+    artifact: str,
+    prompt_registry: RouteRegistry | None = None,
+    persist_path: Path | None = None,
+) -> EvaluationReport:
+    """Evaluate one verified export with prevalidated input evidence.
+
+    ``registry`` governs completion parsing and report metrics.  A continuation
+    evaluates its child against the larger child registry but renders every
+    regression prompt from the parent registry via ``prompt_registry``.
+    """
+
+    prompt_registry = registry if prompt_registry is None else prompt_registry
     try:
-        prompts = [render_functiongemma_prompt(example.input, registry) for example in examples]
+        prompts = [
+            render_functiongemma_prompt(example.input, prompt_registry)
+            for example in examples
+        ]
     except Exception as error:
         raise EvaluationError(f"Could not render evaluation prompts: {error}") from error
-    raw_completions = _generate_completions(
-        model_directory, prompts, manifest.resolved_config.evaluation
-    )
+    raw_completions = _generate_completions(model_directory, prompts, config)
     report = score_completions(
         examples,
         raw_completions,
         registry,
-        manifest.resolved_config.evaluation,
-        artifact=str(directory),
-        data=provenance,
+        config,
+        artifact=artifact,
+        data=data,
     )
-    _write_report(directory / _REPORT_PATH, report)
+    if persist_path is not None:
+        _write_report(persist_path, report)
     return report
+
+
+def evaluate_loaded_artifact(
+    model: Any,
+    tokenizer: Any,
+    *,
+    torch: Any,
+    device: str,
+    scoring_registry: RouteRegistry,
+    prompt_registry: RouteRegistry,
+    examples: Sequence[Example],
+    data: DatasetArtifact,
+    config: EvaluationConfig,
+    artifact: str,
+    persist_path: Path | None = None,
+) -> EvaluationReport:
+    """Evaluate a continuation model already loaded by the training stack.
+
+    Callers validate artifact lineage and hashes before loading the model.
+    ``prompt_registry`` stays fixed to the parent registry for fair regression
+    replay, while ``scoring_registry`` records the evaluated artifact's full
+    route inventory.
+    """
+
+    try:
+        prompts = [
+            render_functiongemma_prompt(example.input, prompt_registry)
+            for example in examples
+        ]
+    except Exception as error:
+        raise EvaluationError(f"Could not render evaluation prompts: {error}") from error
+    raw_completions = _generate_loaded_completions(
+        model, tokenizer, torch, device, prompts, config
+    )
+    report = score_completions(
+        examples,
+        raw_completions,
+        scoring_registry,
+        config,
+        artifact=artifact,
+        data=data,
+    )
+    if persist_path is not None:
+        _write_report(persist_path, report)
+    return report
+
+
+def compare_continuation_evaluations(
+    parent: EvaluationReport,
+    child: EvaluationReport,
+    config: ContinuationConfig,
+) -> ComparativeEvaluation:
+    """Create strict regression evidence from two identically sourced reports."""
+
+    route_accuracy_drop = parent.metrics.route_accuracy - child.metrics.route_accuracy
+    argument_accuracy_drop = (
+        parent.metrics.argument_accuracy - child.metrics.argument_accuracy
+    )
+    return ComparativeEvaluation(
+        regression_data=parent.data,
+        parent=parent,
+        child=child,
+        old_route_names=[route.name for route in parent.routes],
+        max_route_accuracy_drop=config.max_route_accuracy_drop,
+        route_accuracy_drop=route_accuracy_drop,
+        max_argument_accuracy_drop=config.max_argument_accuracy_drop,
+        argument_accuracy_drop=argument_accuracy_drop,
+        passed=(
+            parent.passed
+            and child.passed
+            and route_accuracy_drop <= config.max_route_accuracy_drop
+            and argument_accuracy_drop <= config.max_argument_accuracy_drop
+        ),
+    )
 
 
 def _append_representative(
@@ -415,11 +523,27 @@ def _generate_completions(
             f"the model extra and ensure {model_directory} is a valid local Transformers export: {error}"
         ) from error
 
+    return _generate_loaded_completions(
+        model, tokenizer, torch, capability.device, prompts, config
+    )
+
+
+def _generate_loaded_completions(
+    model: Any,
+    tokenizer: Any,
+    torch: Any,
+    device: str,
+    prompts: Sequence[str],
+    config: EvaluationConfig,
+) -> list[str]:
+    """Generate deterministic completions from a model prepared on ``device``."""
+
     completions: list[str] = []
     try:
+        model.eval()
         for prompt in prompts:
             encoded = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
-            encoded = _move_encoded_inputs(encoded, capability.device)
+            encoded = _move_encoded_inputs(encoded, device)
             prompt_length = _sequence_length(encoded["input_ids"])
             with torch.inference_mode():
                 generated = model.generate(
