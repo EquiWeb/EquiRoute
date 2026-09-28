@@ -83,9 +83,11 @@ def _compile_parameters(schema: ObjectArgumentSchema) -> str:
 
     required = ""
     if schema.required:
-        required = "required:[" + ",".join(
-            f"{_ESCAPE}{name}{_ESCAPE}" for name in schema.required
-        ) + "],"
+        required = (
+            "required:["
+            + ",".join(f"{_ESCAPE}{name}{_ESCAPE}" for name in schema.required)
+            + "],"
+        )
 
     return f"{{{properties}{required}type:{_ESCAPE}OBJECT{_ESCAPE}}}"
 

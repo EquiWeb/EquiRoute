@@ -1,0 +1,4 @@
+{"id":"child-test-replay-track","input":"Find order C-3001 in transit.","route":{"name":"track_order","arguments":{"order_id":"C-3001"}}}
+{"id":"child-test-replay-cancel","input":"Stop order C-3002 before dispatch.","route":{"name":"cancel_order","arguments":{"order_id":"C-3002"}}}
+{"id":"child-test-replay-return","input":"Can I return order C-3003?","route":{"name":"return_order","arguments":{"order_id":"C-3003"}}}
+{"id":"child-test-add-shipping","input":"Set the shipping address for C-3004 to 3 Main Street.","route":{"name":"add_shipping_address","arguments":{"order_id":"C-3004","address":"3 Main Street"}}}

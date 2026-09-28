@@ -100,7 +100,9 @@ def test_validate_dataset_rejects_nfkc_casefold_whitespace_input_leakage(tmp_pat
 
     assert f"{source}:2: input:" in str(raised.value)
     assert f"first declared at {source}:1" in str(raised.value)
-    assert raised.value.correction == "change the input so its normalized text is unique"
+    assert (
+        raised.value.correction == "change the input so its normalized text is unique"
+    )
 
 
 def test_validate_partitions_reports_registry_order_and_curated_coverage(tmp_path):
@@ -169,7 +171,9 @@ def test_validate_partitions_rejects_aliased_paths_and_coverage_gaps(tmp_path):
     with pytest.raises(ExampleLoadError, match="aliases") as alias_error:
         validate_partitions(paths, _registry())
 
-    assert alias_error.value.correction == "use a distinct file for each curated partition"
+    assert (
+        alias_error.value.correction == "use a distinct file for each curated partition"
+    )
 
     paths = _partition_map(tmp_path / "coverage")
     _write_records(
@@ -185,7 +189,9 @@ def test_validate_partitions_rejects_aliased_paths_and_coverage_gaps(tmp_path):
     assert "add at least one 'account_support' example" in str(coverage_error.value)
 
 
-def test_split_emits_route_covered_canonical_artifacts_with_exact_fingerprints(tmp_path):
+def test_split_emits_route_covered_canonical_artifacts_with_exact_fingerprints(
+    tmp_path,
+):
     result = split_dataset(FIXTURES / "split-source.jsonl", _registry(), seed=42)
     output = tmp_path / "splits"
     manifest = write_split(result, output)
@@ -223,9 +229,13 @@ def test_split_emits_route_covered_canonical_artifacts_with_exact_fingerprints(t
             "account_support",
         }
         assert manifest.datasets[partition].examples == len(records)
-        assert manifest.datasets[partition].fingerprint == hashlib.sha256(content).hexdigest()
+        assert (
+            manifest.datasets[partition].fingerprint
+            == hashlib.sha256(content).hexdigest()
+        )
         assert all(
-            line == json.dumps(
+            line
+            == json.dumps(
                 json.loads(line),
                 ensure_ascii=False,
                 sort_keys=True,
@@ -234,12 +244,13 @@ def test_split_emits_route_covered_canonical_artifacts_with_exact_fingerprints(t
             for line in content.decode("utf-8").splitlines()
         )
 
-    assert manifest.source_fingerprint == hashlib.sha256(
-        (FIXTURES / "split-source.jsonl").read_bytes()
-    ).hexdigest()
-    assert json.loads((output / "manifest.json").read_text(encoding="utf-8")) == manifest.model_dump(
-        mode="json"
+    assert (
+        manifest.source_fingerprint
+        == hashlib.sha256((FIXTURES / "split-source.jsonl").read_bytes()).hexdigest()
     )
+    assert json.loads(
+        (output / "manifest.json").read_text(encoding="utf-8")
+    ) == manifest.model_dump(mode="json")
 
 
 def test_split_same_seed_is_byte_identical_and_alternate_seed_moves_a_record(tmp_path):
@@ -251,7 +262,13 @@ def test_split_same_seed_is_byte_identical_and_alternate_seed_moves_a_record(tmp
     write_split(first, first_output)
     write_split(second, second_output)
 
-    for name in ("train.jsonl", "validation.jsonl", "test.jsonl", "report.json", "manifest.json"):
+    for name in (
+        "train.jsonl",
+        "validation.jsonl",
+        "test.jsonl",
+        "report.json",
+        "manifest.json",
+    ):
         assert (first_output / name).read_bytes() == (second_output / name).read_bytes()
 
     first_assignments = {

@@ -91,9 +91,7 @@ def test_rejects_extra_argument(registry):
         ("enabled", 1, "argument 'enabled' must be boolean, got integer"),
     ],
 )
-def test_rejects_wrong_primitive_argument_type(
-    registry, name, value, expected_detail
-):
+def test_rejects_wrong_primitive_argument_type(registry, name, value, expected_detail):
     arguments = {"text": "hello", "count": 3, "score": 2.5, "enabled": True}
     arguments[name] = value
 

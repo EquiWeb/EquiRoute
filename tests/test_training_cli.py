@@ -55,7 +55,9 @@ def test_train_reports_actionable_public_api_failures(monkeypatch, tmp_path) -> 
     assert "install the model extra with `uv sync --extra model`" in result.output
 
 
-def test_export_forwards_huggingface_format_to_public_api(monkeypatch, tmp_path) -> None:
+def test_export_forwards_huggingface_format_to_public_api(
+    monkeypatch, tmp_path
+) -> None:
     artifact = tmp_path / "artifact"
     calls: list[Path] = []
 
@@ -81,7 +83,9 @@ def test_export_rejects_formats_other_than_huggingface(monkeypatch, tmp_path) ->
 
     monkeypatch.setattr(cli, "export_router", unexpected_export_router)
 
-    result = CliRunner().invoke(cli.app, ["export", str(artifact), "--format", "archive"])
+    result = CliRunner().invoke(
+        cli.app, ["export", str(artifact), "--format", "archive"]
+    )
 
     assert result.exit_code == 2
     assert "only --format huggingface is supported" in result.output
@@ -102,7 +106,9 @@ def test_export_reports_actionable_public_api_failures(monkeypatch, tmp_path) ->
     assert "artifact has no retained adapter" in result.output
 
 
-def test_continue_forwards_parent_artifact_and_config_to_public_api(monkeypatch, tmp_path) -> None:
+def test_continue_forwards_parent_artifact_and_config_to_public_api(
+    monkeypatch, tmp_path
+) -> None:
     parent = tmp_path / "parent"
     config = tmp_path / "config.yaml"
     calls: list[tuple[Path, Path]] = []

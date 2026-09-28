@@ -19,14 +19,16 @@ from typing import Any
 
 from .dataset import (
     _file_fingerprint,
-    _normalize_input,
     _registry_fingerprint,
+    validate_continuation_regression,
     validate_dataset,
     validate_partitions,
 )
 from .errors import EquiRouteError
 from .functiongemma import compile_functiongemma
 from .hardware import TrainingCapability, select_training_capability
+from .migrations import migrate_training_manifest
+
 from .io import iter_examples, load_examples, load_route_registry, load_training_config
 from .model import (
     FUNCTIONGEMMA_LORA_BIAS,
@@ -83,7 +85,6 @@ class _PreparedRun:
     manifest: TrainingManifest
 
 
-
 @dataclass(frozen=True, slots=True)
 class _ContinuationPreflight:
     config: Any
@@ -101,9 +102,10 @@ class _ContinuationPreflight:
     child_test_examples: list[Any]
     child_test_data: DatasetArtifact
 
+
 _MARKER = "<start_function_call>"
 _IGNORED_LABEL = -100
-_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "2"
 
 
 def train_router(config_path: str | Path, *, resume: bool = False) -> TrainingArtifact:
@@ -139,7 +141,9 @@ def train_router(config_path: str | Path, *, resume: bool = False) -> TrainingAr
     if resume:
         previous = _read_manifest(_manifest_path(output_directory))
         _verify_resume_manifest(previous, prepared.manifest)
-        checkpoint = _find_resume_checkpoint(stack, _trainer_state_directory(output_directory))
+        checkpoint = _find_resume_checkpoint(
+            stack, _trainer_state_directory(output_directory)
+        )
     else:
         checkpoint = None
 
@@ -147,7 +151,9 @@ def train_router(config_path: str | Path, *, resume: bool = False) -> TrainingAr
     adapter_model = _apply_lora(stack, model, config)
 
     if not resume:
-        _initialize_artifact(output_directory, config_source, sources["routes"], prepared.manifest)
+        _initialize_artifact(
+            output_directory, config_source, sources["routes"], prepared.manifest
+        )
 
     try:
         selection, evaluation = _run_stage3_training(
@@ -189,7 +195,9 @@ def continue_router(
     config_source = _as_path(config_path, "continuation configuration")
     preflight = _preflight_continuation(from_artifact, config_source)
 
-    with tempfile.TemporaryDirectory(prefix="equiroute-continuation-adapter-") as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="equiroute-continuation-adapter-"
+    ) as temporary:
         parent_adapter_snapshot = _snapshot_parent_adapter(
             preflight.parent_adapter_directory,
             preflight.parent_manifest,
@@ -304,6 +312,12 @@ def export_router(artifact: TrainingArtifact | str | Path) -> TrainingArtifact:
             "Resume or complete its training run first."
         )
 
+    artifacts = manifest.artifacts
+    if artifacts is None:
+        raise TrainingError(
+            f"Completed artifact {output_directory} does not record required artifact hashes."
+        )
+
     model_directory = _model_directory(output_directory)
     if model_directory.exists():
         _verify_existing_export(model_directory, manifest)
@@ -337,7 +351,7 @@ def export_router(artifact: TrainingArtifact | str | Path) -> TrainingArtifact:
         update={
             "artifacts": ArtifactHashes(
                 merged_model=_hash_tree(model_directory, output_directory),
-                adapter=manifest.artifacts.adapter,
+                adapter=artifacts.adapter,
             )
         }
     )
@@ -362,12 +376,12 @@ def _load_local_inputs(
             {name: sources[name] for name in ("train", "validation", "test")}, registry
         )
     except EquiRouteError as error:
-        raise TrainingError(f"Cannot prepare validated training inputs: {error}") from error
+        raise TrainingError(
+            f"Cannot prepare validated training inputs: {error}"
+        ) from error
 
     output_directory = _resolve_config_path(base_directory, config.output.directory)
     return config, registry, sources, output_directory
-
-
 
 
 def _preflight_continuation(
@@ -375,7 +389,9 @@ def _preflight_continuation(
 ) -> _ContinuationPreflight:
     """Validate every local continuation input before optional ML imports."""
 
-    config, child_registry, child_sources, output_directory = _load_local_inputs(config_source)
+    config, child_registry, child_sources, output_directory = _load_local_inputs(
+        config_source
+    )
     if config.continuation is None:
         raise TrainingError(
             "Continuation requires a top-level continuation configuration with a "
@@ -456,6 +472,7 @@ def _preflight_continuation(
         child_test_data=child_test_data,
     )
 
+
 def _snapshot_parent_adapter(
     parent_adapter_directory: Path,
     parent_manifest: TrainingManifest,
@@ -495,7 +512,9 @@ def _continuation_parent_directory(
 def _read_manifest_with_sha256(path: Path) -> tuple[TrainingManifest, str]:
     try:
         content = path.read_bytes()
-        manifest = TrainingManifest.model_validate(json.loads(content))
+        manifest = TrainingManifest.model_validate(
+            migrate_training_manifest(json.loads(content))
+        )
     except (OSError, ValueError, TypeError) as error:
         raise TrainingError(
             f"Could not read valid EquiRoute training manifest {path}: {error}"
@@ -536,7 +555,9 @@ def _verify_parent_model_identity(
         )
 
 
-def _verify_continuation_lora(parent_manifest: TrainingManifest, child_config: Any) -> None:
+def _verify_continuation_lora(
+    parent_manifest: TrainingManifest, child_config: Any
+) -> None:
     parent_lora = parent_manifest.resolved_config.lora
     if (
         child_config.training.lora_rank != parent_lora.rank
@@ -580,23 +601,15 @@ def _continuation_regression_data(
         raise TrainingError(
             f"Continuation regression dataset {source} does not exist or is not a file."
         )
-    for partition, partition_source in child_sources.items():
-        if source == partition_source:
-            raise TrainingError(
-                f"Continuation regression dataset {source} must not alias the child "
-                f"{partition} partition."
-            )
-
     try:
+        validate_continuation_regression(
+            source,
+            {name: child_sources[name] for name in ("train", "validation", "test")},
+            child_registry,
+        )
         report = validate_dataset(source, parent_registry)
         examples = load_examples(source, parent_registry)
         fingerprint = _file_fingerprint(source, "continuation regression data")
-        _require_regression_disjoint(
-            source,
-            examples,
-            child_sources,
-            child_registry,
-        )
     except EquiRouteError as error:
         raise TrainingError(
             f"Cannot prepare validated continuation regression data: {error}"
@@ -621,6 +634,7 @@ def _continuation_regression_data(
         fingerprint=fingerprint,
     )
 
+
 def _continuation_child_test_data(
     source: Path, registry: Any
 ) -> tuple[list[Any], DatasetArtifact]:
@@ -635,31 +649,6 @@ def _continuation_child_test_data(
         ) from error
     return examples, DatasetArtifact(examples=len(examples), fingerprint=fingerprint)
 
-
-
-
-def _require_regression_disjoint(
-    regression_source: Path,
-    regression_examples: Sequence[Any],
-    child_sources: Mapping[str, Path],
-    child_registry: Any,
-) -> None:
-    regression_ids = {example.id for example in regression_examples}
-    regression_inputs = {_normalize_input(example.input) for example in regression_examples}
-    for partition in ("train", "validation", "test"):
-        source = child_sources[partition]
-        for loaded in iter_examples(source, child_registry):
-            example = loaded.example
-            if example.id in regression_ids:
-                raise TrainingError(
-                    f"Continuation regression dataset {regression_source} reuses example "
-                    f"id {example.id!r} from child {partition} partition {source}."
-                )
-            if _normalize_input(example.input) in regression_inputs:
-                raise TrainingError(
-                    f"Continuation regression dataset {regression_source} reuses an input "
-                    f"from child {partition} partition {source}."
-                )
 
 def _prepare_run(
     config: Any,
@@ -742,7 +731,9 @@ def _run_stage3_training(
     trainer.train(resume_from_checkpoint=checkpoint)
 
     validation_metrics = trainer.evaluate(
-        eval_dataset=_dataset_for(stack.torch, prepared.partitions["validation"].records),
+        eval_dataset=_dataset_for(
+            stack.torch, prepared.partitions["validation"].records
+        ),
         metric_key_prefix="eval",
     )
     test_metrics = trainer.evaluate(
@@ -757,6 +748,7 @@ def _run_stage3_training(
 
     selection = _checkpoint_selection(trainer, output_directory)
     evaluation = TrainingEvaluation(
+        schema_version=_SCHEMA_VERSION,
         validation=PartitionEvaluation(
             examples=len(prepared.partitions["validation"].records),
             loss=_required_loss(validation_metrics, "eval_loss"),
@@ -870,13 +862,17 @@ def _token_ids(tokenizer: Any, text: str) -> list[int]:
     try:
         token_ids = encoded["input_ids"]
     except (KeyError, TypeError) as error:
-        raise TrainingError("The FunctionGemma tokenizer did not return input_ids.") from error
+        raise TrainingError(
+            "The FunctionGemma tokenizer did not return input_ids."
+        ) from error
     if hasattr(token_ids, "tolist"):
         token_ids = token_ids.tolist()
     if not isinstance(token_ids, list) or any(
         not isinstance(token, int) or isinstance(token, bool) for token in token_ids
     ):
-        raise TrainingError("The FunctionGemma tokenizer returned non-integer input_ids.")
+        raise TrainingError(
+            "The FunctionGemma tokenizer returned non-integer input_ids."
+        )
     return token_ids
 
 
@@ -976,8 +972,7 @@ def _apply_lora(stack: _TrainingStack, model: Any, config: Any) -> Any:
         return stack.peft.get_peft_model(model, lora_config)
     except Exception as error:
         raise TrainingError(
-            "Could not configure the FunctionGemma q_proj/v_proj LoRA adapter: "
-            f"{error}"
+            f"Could not configure the FunctionGemma q_proj/v_proj LoRA adapter: {error}"
         ) from error
 
 
@@ -999,6 +994,7 @@ def _load_parent_adapter(
             f"Could not load retained adapter {adapter_directory} onto the pinned "
             f"{FUNCTIONGEMMA_MODEL_ID} base model: {error}"
         ) from error
+
 
 def _evaluate_child_semantics(
     stack: _TrainingStack,
@@ -1042,7 +1038,6 @@ def _require_added_route_recall(report: Any, registry_change: RegistryChange) ->
             + ", ".join(failed)
             + "; the child artifact remains incomplete."
         )
-
 
 
 def _evaluate_continuation(
@@ -1149,16 +1144,20 @@ def _build_trainer(
         )
     except Exception as error:
         raise TrainingError(
-            "Could not initialize the deterministic epoch-based LoRA trainer: " f"{error}"
+            f"Could not initialize the deterministic epoch-based LoRA trainer: {error}"
         ) from error
 
 
 def _dataset_for(torch_module: Any, records: Sequence[dict[str, list[int]]]) -> Any:
-    dataset_base = getattr(getattr(getattr(torch_module, "utils", None), "data", None), "Dataset", None)
+    dataset_base = getattr(
+        getattr(getattr(torch_module, "utils", None), "data", None), "Dataset", None
+    )
     if dataset_base is None:
-        raise TrainingError("The installed torch package does not provide torch.utils.data.Dataset.")
+        raise TrainingError(
+            "The installed torch package does not provide torch.utils.data.Dataset."
+        )
 
-    class CompiledCompletionDataset(dataset_base):
+    class CompiledCompletionDataset:
         def __init__(self, entries: Sequence[dict[str, list[int]]]) -> None:
             self.records = entries
 
@@ -1171,10 +1170,14 @@ def _dataset_for(torch_module: Any, records: Sequence[dict[str, list[int]]]) -> 
     return CompiledCompletionDataset(records)
 
 
-def _collator_for(torch_module: Any, pad_token_id: int) -> Callable[[list[dict[str, list[int]]]], dict[str, Any]]:
+def _collator_for(
+    torch_module: Any, pad_token_id: int
+) -> Callable[[list[dict[str, list[int]]]], dict[str, Any]]:
     def collate(features: list[dict[str, list[int]]]) -> dict[str, Any]:
         if not features:
-            raise TrainingError("The trainer requested a batch with no training examples.")
+            raise TrainingError(
+                "The trainer requested a batch with no training examples."
+            )
         width = max(len(feature["input_ids"]) for feature in features)
         batch_size = len(features)
         input_ids = torch_module.full(
@@ -1192,7 +1195,9 @@ def _collator_for(torch_module: Any, pad_token_id: int) -> Callable[[list[dict[s
                 feature["input_ids"], dtype=torch_module.long
             )
             attention_mask[row, :length] = 1
-            labels[row, :length] = torch_module.tensor(feature["labels"], dtype=torch_module.long)
+            labels[row, :length] = torch_module.tensor(
+                feature["labels"], dtype=torch_module.long
+            )
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
@@ -1206,16 +1211,22 @@ def _checkpoint_selection(trainer: Any, output_directory: Path) -> CheckpointSel
     state = getattr(trainer, "state", None)
     checkpoint = getattr(state, "best_model_checkpoint", None)
     metric = getattr(state, "best_metric", None)
+    global_step_value = getattr(state, "global_step", None)
+    epoch_value = getattr(state, "epoch", None)
     if not isinstance(checkpoint, str) or not checkpoint:
         raise TrainingError(
             "Epoch evaluation did not record a best checkpoint by eval_loss; no portable "
             "artifact will be emitted."
         )
+    if metric is None or global_step_value is None or epoch_value is None:
+        raise TrainingError(
+            "The best checkpoint is missing its eval_loss, global step, or epoch metadata."
+        )
     try:
         value = float(metric)
-        global_step = int(getattr(state, "global_step"))
-        epoch = float(getattr(state, "epoch"))
-    except (TypeError, ValueError, AttributeError) as error:
+        global_step = int(global_step_value)
+        epoch = float(epoch_value)
+    except (TypeError, ValueError) as error:
         raise TrainingError(
             "The best checkpoint is missing its eval_loss, global step, or epoch metadata."
         ) from error
@@ -1224,7 +1235,9 @@ def _checkpoint_selection(trainer: Any, output_directory: Path) -> CheckpointSel
     if not checkpoint_path.is_absolute():
         checkpoint_path = _trainer_state_directory(output_directory) / checkpoint_path
     try:
-        relative_path = checkpoint_path.resolve().relative_to(output_directory.resolve())
+        relative_path = checkpoint_path.resolve().relative_to(
+            output_directory.resolve()
+        )
     except ValueError as error:
         raise TrainingError(
             f"Trainer selected checkpoint {checkpoint_path}, which is outside {output_directory}."
@@ -1240,6 +1253,10 @@ def _checkpoint_selection(trainer: Any, output_directory: Path) -> CheckpointSel
 
 def _required_loss(metrics: Mapping[str, Any], key: str) -> float:
     value = metrics.get(key)
+    if value is None:
+        raise TrainingError(
+            f"Trainer evaluation did not produce required {key}; received {dict(metrics)}."
+        )
     try:
         return float(value)
     except (TypeError, ValueError) as error:
@@ -1279,7 +1296,9 @@ def _require_resume_directory(output_directory: Path) -> None:
         )
 
 
-def _verify_resume_manifest(previous: TrainingManifest, expected: TrainingManifest) -> None:
+def _verify_resume_manifest(
+    previous: TrainingManifest, expected: TrainingManifest
+) -> None:
     if previous.status != "running":
         raise TrainingError(
             "Cannot resume a completed artifact. Choose a new output.directory for another "
@@ -1324,9 +1343,7 @@ def _save_merged_model(model: Any, tokenizer: Any, output_directory: Path) -> No
         raise TrainingError(
             f"Refusing to overwrite existing merged model directory {target}."
         )
-    temporary = Path(
-        tempfile.mkdtemp(prefix=".model.tmp-", dir=output_directory)
-    )
+    temporary = Path(tempfile.mkdtemp(prefix=".model.tmp-", dir=output_directory))
     try:
         merged = model.merge_and_unload()
         merged.save_pretrained(temporary, safe_serialization=True)
@@ -1348,10 +1365,14 @@ def _artifact_hashes(output_directory: Path) -> ArtifactHashes:
 
 def _hash_tree(directory: Path, root: Path) -> list[ArtifactFile]:
     if not directory.is_dir():
-        raise TrainingError(f"Expected retained artifact directory {directory} was not written.")
+        raise TrainingError(
+            f"Expected retained artifact directory {directory} was not written."
+        )
     files = [path for path in sorted(directory.rglob("*")) if path.is_file()]
     if not files:
-        raise TrainingError(f"Expected retained artifact directory {directory} contains no files.")
+        raise TrainingError(
+            f"Expected retained artifact directory {directory} contains no files."
+        )
     return [
         ArtifactFile(
             path=path.relative_to(root).as_posix(),
@@ -1375,7 +1396,9 @@ def _verify_existing_export(model_directory: Path, manifest: TrainingManifest) -
         )
 
 
-def _verify_retained_adapter(adapter_directory: Path, manifest: TrainingManifest) -> None:
+def _verify_retained_adapter(
+    adapter_directory: Path, manifest: TrainingManifest
+) -> None:
     expected = manifest.artifacts
     if expected is None:
         raise TrainingError(
@@ -1388,10 +1411,11 @@ def _verify_retained_adapter(adapter_directory: Path, manifest: TrainingManifest
             "manifest. Refusing to export it."
         )
 
+
 def _read_manifest(path: Path) -> TrainingManifest:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
-        return TrainingManifest.model_validate(document)
+        return TrainingManifest.model_validate(migrate_training_manifest(document))
     except (OSError, ValueError, TypeError) as error:
         raise TrainingError(
             f"Could not read valid EquiRoute training manifest {path}: {error}"
@@ -1420,10 +1444,14 @@ def _write_json(path: Path, document: Mapping[str, Any]) -> None:
             temporary_path = Path(temporary.name)
         temporary_path.replace(path)
     except (OSError, TypeError, ValueError) as error:
-        raise TrainingError(f"Could not write artifact provenance {path}: {error}") from error
+        raise TrainingError(
+            f"Could not write artifact provenance {path}: {error}"
+        ) from error
 
 
-def _artifact_for(output_directory: Path, manifest: TrainingManifest) -> TrainingArtifact:
+def _artifact_for(
+    output_directory: Path, manifest: TrainingManifest
+) -> TrainingArtifact:
     return TrainingArtifact(
         directory=str(output_directory),
         status=manifest.status,
@@ -1449,9 +1477,13 @@ def _as_path(value: str | Path, name: str) -> Path:
     try:
         path = Path(value)
     except TypeError as error:
-        raise TrainingError(f"{name.capitalize()} path must be a string or pathlib.Path.") from error
+        raise TrainingError(
+            f"{name.capitalize()} path must be a string or pathlib.Path."
+        ) from error
     if not path.is_file():
-        raise TrainingError(f"{name.capitalize()} file {path} does not exist or is not a file.")
+        raise TrainingError(
+            f"{name.capitalize()} file {path} does not exist or is not a file."
+        )
     return path.resolve()
 
 

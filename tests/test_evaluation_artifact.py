@@ -22,7 +22,9 @@ _FINGERPRINT = "a" * 64
 _MODEL_HASH = hashlib.sha256(b"model").hexdigest()
 
 
-def _write_completed_artifact(tmp_path: Path, *, registry_fingerprint: str | None = None) -> Path:
+def _write_completed_artifact(
+    tmp_path: Path, *, registry_fingerprint: str | None = None
+) -> Path:
     artifact = tmp_path / "artifact"
     provenance = artifact / "equiroute"
     provenance.mkdir(parents=True)
@@ -101,7 +103,9 @@ def _write_completed_artifact(tmp_path: Path, *, registry_fingerprint: str | Non
                 "test_used_for_selection": False,
             },
             "artifacts": {
-                "merged_model": [{"path": "model/model.safetensors", "sha256": _MODEL_HASH}],
+                "merged_model": [
+                    {"path": "model/model.safetensors", "sha256": _MODEL_HASH}
+                ],
                 "adapter": [
                     {
                         "path": "continuation/adapter/adapter_model.safetensors",
@@ -126,7 +130,9 @@ def test_evaluates_exported_artifact_with_input_only_prompts_and_atomic_report(
     generated = (STAGE4 / "completions.txt").read_text(encoding="utf-8").splitlines()
     calls: list[tuple[Path, list[str], Any]] = []
 
-    def fake_generate(model_directory: Path, prompts: list[str], config: Any) -> list[str]:
+    def fake_generate(
+        model_directory: Path, prompts: list[str], config: Any
+    ) -> list[str]:
         calls.append((model_directory, prompts, config))
         return generated
 
@@ -147,7 +153,9 @@ def test_evaluates_exported_artifact_with_input_only_prompts_and_atomic_report(
     assert report.config.thresholds.route_accuracy == 0.75
     assert report.passed is False
     persisted = artifact / "equiroute" / "semantic-evaluation.json"
-    assert json.loads(persisted.read_text(encoding="utf-8")) == report.model_dump(mode="json")
+    assert json.loads(persisted.read_text(encoding="utf-8")) == report.model_dump(
+        mode="json"
+    )
 
 
 def test_rejects_artifact_registry_provenance_before_model_generation(
@@ -156,7 +164,9 @@ def test_rejects_artifact_registry_provenance_before_model_generation(
     artifact = _write_completed_artifact(tmp_path, registry_fingerprint="b" * 64)
 
     def unexpected_generation(*_: object) -> list[str]:
-        raise AssertionError("model generation must not begin before provenance validation")
+        raise AssertionError(
+            "model generation must not begin before provenance validation"
+        )
 
     monkeypatch.setattr(evaluation, "_generate_completions", unexpected_generation)
 
@@ -173,7 +183,9 @@ def test_rejects_tampered_export_before_model_generation(
     (artifact / "model" / "model.safetensors").write_bytes(b"tampered")
 
     def unexpected_generation(*_: object) -> list[str]:
-        raise AssertionError("model generation must not begin before export verification")
+        raise AssertionError(
+            "model generation must not begin before export verification"
+        )
 
     monkeypatch.setattr(evaluation, "_generate_completions", unexpected_generation)
 

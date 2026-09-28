@@ -1,0 +1,44 @@
+routes:
+  - name: track_order
+    description: Find the current shipping status or delivery estimate for an order.
+    parameters:
+      type: object
+      properties:
+        order_id:
+          type: string
+      required:
+        - order_id
+      additionalProperties: false
+  - name: cancel_order
+    description: Cancel an order that has not entered irreversible fulfillment.
+    parameters:
+      type: object
+      properties:
+        order_id:
+          type: string
+      required:
+        - order_id
+      additionalProperties: false
+  - name: return_order
+    description: Start a return for an order that the customer received.
+    parameters:
+      type: object
+      properties:
+        order_id:
+          type: string
+      required:
+        - order_id
+      additionalProperties: false
+  - name: add_shipping_address
+    description: Add a shipping address before an order begins fulfillment.
+    parameters:
+      type: object
+      properties:
+        order_id:
+          type: string
+        address:
+          type: string
+      required:
+        - order_id
+        - address
+      additionalProperties: false

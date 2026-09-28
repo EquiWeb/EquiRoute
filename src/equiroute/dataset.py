@@ -88,6 +88,56 @@ def validate_partitions(
     return _build_report(counts, registry)
 
 
+def validate_continuation_regression(
+    regression: str | Path,
+    child_paths: Mapping[str, Path],
+    child_registry: RouteRegistry,
+) -> DatasetReport:
+    """Validate local regression data without asserting an unknown parent artifact."""
+
+    source = Path(regression)
+    child_sources = _curated_partition_sources(child_paths)
+    _reject_aliased_partitions(child_sources)
+    if any(
+        source.resolve(strict=False) == partition_source.resolve(strict=False)
+        for partition_source in child_sources.values()
+    ):
+        raise ExampleLoadError(
+            "continuation regression dataset must not alias a child partition",
+            source=source,
+            path="path",
+            correction="use a separate regression JSONL file",
+        )
+
+    report = validate_dataset(source, child_registry)
+    regression_ids: set[str] = set()
+    regression_inputs: set[str] = set()
+    for loaded in iter_examples(source, child_registry):
+        regression_ids.add(_required_id(loaded.example))
+        regression_inputs.add(_normalize_input(loaded.example.input))
+    for partition in _SPLIT_NAMES:
+        partition_source = child_sources[partition]
+        for loaded in iter_examples(partition_source, child_registry):
+            example = loaded.example
+            if example.id in regression_ids:
+                raise ExampleLoadError(
+                    f"continuation regression dataset reuses example id {example.id!r} "
+                    f"from child {partition} partition",
+                    source=source,
+                    path="id",
+                    correction="use an example id distinct from every child partition",
+                )
+            if _normalize_input(example.input) in regression_inputs:
+                raise ExampleLoadError(
+                    "continuation regression dataset reuses an input from child "
+                    f"{partition} partition",
+                    source=source,
+                    path="input",
+                    correction="use input text distinct from every child partition",
+                )
+    return report
+
+
 def split_dataset(
     data: str | Path, registry: RouteRegistry, *, seed: int
 ) -> SplitResult:
@@ -148,9 +198,7 @@ def write_split(result: SplitResult, output_directory: str | Path) -> DatasetMan
             correction="choose a new output directory or remove the existing one",
         )
 
-    temporary = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.tmp-", dir=output.parent)
-    )
+    temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.tmp-", dir=output.parent))
     try:
         artifacts: dict[str, DatasetArtifact] = {}
         for partition in _SPLIT_NAMES:
@@ -168,7 +216,7 @@ def write_split(result: SplitResult, output_directory: str | Path) -> DatasetMan
             _canonical_pretty_json_bytes(result.report.model_dump(mode="json")),
         )
         manifest = DatasetManifest(
-            schema_version="1",
+            schema_version="2",
             registry_fingerprint=result.registry_fingerprint,
             source_fingerprint=result.source_fingerprint,
             split_seed=result.seed,
@@ -192,7 +240,9 @@ def _curated_partition_sources(paths: Mapping[str, Path]) -> dict[str, Path]:
     required = set(_SPLIT_NAMES)
     if supplied != required:
         missing = ", ".join(name for name in _SPLIT_NAMES if name not in supplied)
-        unexpected = ", ".join(sorted(name for name in supplied if name not in required))
+        unexpected = ", ".join(
+            sorted(name for name in supplied if name not in required)
+        )
         details: list[str] = []
         if missing:
             details.append(f"missing partitions: {missing}")
@@ -287,7 +337,7 @@ def _build_report(
         for route in registry.routes
     ]
     return DatasetReport(
-        schema_version="1",
+        schema_version="2",
         example_count=sum(distribution.total for distribution in distributions),
         route_distribution=distributions,
     )
@@ -358,9 +408,12 @@ def _registry_fingerprint(registry: RouteRegistry) -> str:
 
 
 def _canonical_jsonl_bytes(example: Example) -> bytes:
-    return _canonical_compact_json_bytes(
-        example.model_dump(mode="json", exclude_none=True)
-    ) + b"\n"
+    return (
+        _canonical_compact_json_bytes(
+            example.model_dump(mode="json", exclude_none=True)
+        )
+        + b"\n"
+    )
 
 
 def _canonical_compact_json_bytes(document: object) -> bytes:
@@ -374,13 +427,16 @@ def _canonical_compact_json_bytes(document: object) -> bytes:
 
 
 def _canonical_pretty_json_bytes(document: object) -> bytes:
-    return json.dumps(
-        document,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        indent=2,
-    ).encode("utf-8") + b"\n"
+    return (
+        json.dumps(
+            document,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            indent=2,
+        ).encode("utf-8")
+        + b"\n"
+    )
 
 
 def _fingerprint(content: bytes) -> str:

@@ -27,9 +27,10 @@ def select_device(torch_module: Any | None = None) -> DeviceName:
     """
     if torch_module is None:
         try:
-            import torch as torch_module
+            import torch as imported_torch
         except ImportError:
             return "cpu"
+        torch_module = imported_torch
 
     cuda = getattr(torch_module, "cuda", None)
     if _is_available(cuda):
@@ -54,9 +55,10 @@ def select_training_capability(
     """
     if torch_module is None:
         try:
-            import torch as torch_module
+            import torch as imported_torch
         except ImportError:
             return TrainingCapability("cpu", "float32", "no")
+        torch_module = imported_torch
 
     device = select_device(torch_module)
     if device == "cuda":

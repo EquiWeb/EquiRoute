@@ -25,9 +25,21 @@ model = [
 equiroute = "equiroute.cli:app"
 
 [tool.uv]
-default-groups = ["test"]
+default-groups = ["dev", "test"]
 
 [dependency-groups]
+dev = [
+    "mypy>=1.14",
+    "ruff>=0.9",
+    "types-PyYAML>=6.0.12",
+]
 test = [
     "pytest>=8",
 ]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+follow_imports = "skip"

@@ -13,6 +13,8 @@ from pydantic import BaseModel, ValidationError
 
 from .decisions import DecisionValidationError, _argument_correction, validate_decision
 from .errors import ConfigLoadError, ExampleLoadError, RegistryLoadError, SourceError
+from .migrations import SchemaMigrationError, migrate_training_config
+
 from .schemas import Decision, Example, RouteRegistry, TrainingConfig
 
 _Model = TypeVar("_Model", bound=BaseModel)
@@ -95,7 +97,9 @@ def load_route_registry(path: str | Path) -> RouteRegistry:
 
     source = Path(path)
     document = _load_yaml_mapping(source, RegistryLoadError, "route registry")
-    return _validate_model(document, RouteRegistry, source, RegistryLoadError, "route registry")
+    return _validate_model(
+        document, RouteRegistry, source, RegistryLoadError, "route registry"
+    )
 
 
 def load_training_config(path: str | Path) -> TrainingConfig:
@@ -103,6 +107,7 @@ def load_training_config(path: str | Path) -> TrainingConfig:
 
     source = Path(path)
     document = _load_yaml_mapping(source, ConfigLoadError, "training configuration")
+    document = _migrate_training_config(document, source)
     return _validate_model(
         document, TrainingConfig, source, ConfigLoadError, "training configuration"
     )
@@ -162,6 +167,20 @@ def _load_yaml_mapping(
     return document
 
 
+def _migrate_training_config(document: dict[str, Any], source: Path) -> dict[str, Any]:
+    try:
+        migrated = migrate_training_config(document)
+    except SchemaMigrationError as error:
+        raise ConfigLoadError(
+            str(error),
+            source=source,
+            path="schema_version",
+            correction='use supported schema_version "2" for new configurations',
+        ) from error
+    assert isinstance(migrated, dict)
+    return migrated
+
+
 def _validate_model(
     document: dict[str, Any],
     model_type: type[_Model],
@@ -174,7 +193,8 @@ def _validate_model(
         return model_type.model_validate(document)
     except ValidationError as error:
         details = "; ".join(
-            f"{_format_location(issue['loc'])}: {issue['msg']}" for issue in error.errors()
+            f"{_format_location(issue['loc'])}: {issue['msg']}"
+            for issue in error.errors()
         )
         raise error_type(
             f"invalid {document_name}: {details}",
@@ -202,7 +222,9 @@ def _validate_decision(
 
         route = registry.route_named(decision.name)
         if route is None:
-            raise AssertionError("invalid arguments reported for an unknown route") from error
+            raise AssertionError(
+                "invalid arguments reported for an unknown route"
+            ) from error
         raise ExampleLoadError(
             error.detail,
             source=source,
@@ -218,13 +240,19 @@ def _validation_correction(error: ValidationError) -> str | None:
     locations = [_format_location(issue["loc"]) for issue in issues]
 
     if types == {"missing"}:
-        return "add required field" + ("s" if len(locations) > 1 else "") + ": " + ", ".join(
-            locations
+        return (
+            "add required field"
+            + ("s" if len(locations) > 1 else "")
+            + ": "
+            + ", ".join(locations)
         )
     if types == {"extra_forbidden"}:
-        return "remove unsupported field" + (
-            "s" if len(locations) > 1 else ""
-        ) + ": " + ", ".join(locations)
+        return (
+            "remove unsupported field"
+            + ("s" if len(locations) > 1 else "")
+            + ": "
+            + ", ".join(locations)
+        )
     if types <= {"string_too_short"}:
         return "provide a non-empty string"
     if types <= {"string_type"}:
@@ -233,11 +261,12 @@ def _validation_correction(error: ValidationError) -> str | None:
         return "provide an object"
     if types <= {"list_type"}:
         return "provide a list"
-    return "correct invalid field" + ("s" if len(locations) > 1 else "") + ": " + ", ".join(
-        locations
+    return (
+        "correct invalid field"
+        + ("s" if len(locations) > 1 else "")
+        + ": "
+        + ", ".join(locations)
     )
-
-
 
 
 def _format_location(location: tuple[Any, ...]) -> str:

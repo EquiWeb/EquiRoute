@@ -3,46 +3,76 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from .dataset import split_dataset, validate_partitions, write_split
+from .dataset import (
+    split_dataset,
+    validate_continuation_regression,
+    validate_partitions,
+    write_split,
+)
 from .evaluation import EvaluationError, evaluate_artifact
 from .errors import EquiRouteError
 from .io import load_route_registry, load_training_config
+from .init import InitError, create_starter_project
 from .training import TrainingError, continue_router, export_router, train_router
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
 
 @app.command()
-def init() -> None:
-    """Describe the Stage 0 project initialization boundary."""
-    typer.echo("Stage 0 does not generate project files; author a registry, JSONL data, and config.")
+def init(target: Annotated[Path, typer.Argument()]) -> None:
+    """Create a self-contained local router tutorial."""
+    try:
+        project = create_starter_project(target)
+    except InitError as error:
+        typer.echo(f"Initialization failed: {error}", err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo("Next commands:")
+    typer.echo(f"  cd {shlex.quote(str(project))}")
+    typer.echo("  uv sync")
+    typer.echo("  See README.md for the complete workflow.")
 
 
 @app.command()
-def validate(config: Annotated[Path, typer.Argument(exists=True, readable=True)]) -> None:
-    """Validate a training configuration, route registry, and declared JSONL data."""
+def validate(
+    config: Annotated[Path, typer.Argument(exists=True, readable=True)],
+) -> None:
+    """Validate local training inputs and continuation replay separation.
+
+    Parent artifact identity and preserved old-route coverage are verified only
+    by ``equiroute continue --from``.
+    """
     try:
         training_config = load_training_config(config)
         base_directory = config.parent
         registry = load_route_registry(base_directory / training_config.routes)
-        report = validate_partitions(
-            {
-                "train": base_directory / training_config.data.train,
-                "validation": base_directory / training_config.data.validation,
-                "test": base_directory / training_config.data.test,
-            },
-            registry,
-        )
+        partitions = {
+            "train": base_directory / training_config.data.train,
+            "validation": base_directory / training_config.data.validation,
+            "test": base_directory / training_config.data.test,
+        }
+        report = validate_partitions(partitions, registry)
+        if training_config.continuation is not None:
+            regression = base_directory / training_config.continuation.regression
+            validate_continuation_regression(regression, partitions, registry)
     except EquiRouteError as error:
         typer.echo(f"Validation failed: {error}", err=True)
         raise typer.Exit(code=1) from error
 
     typer.echo(_canonical_json(report.model_dump(mode="json")))
+    if training_config.continuation is not None:
+        typer.echo(
+            "Continuation regression data was validated locally; parent artifact "
+            "identity and preserved-route coverage are checked by "
+            "`equiroute continue --from`.",
+            err=True,
+        )
 
 
 def _canonical_json(value: object) -> str:

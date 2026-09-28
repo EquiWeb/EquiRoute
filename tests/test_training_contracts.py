@@ -81,7 +81,9 @@ def _completed_manifest(**changes: object) -> dict[str, object]:
             "test_used_for_selection": False,
         },
         "artifacts": {
-            "merged_model": [{"path": "model/model.safetensors", "sha256": _FINGERPRINT}],
+            "merged_model": [
+                {"path": "model/model.safetensors", "sha256": _FINGERPRINT}
+            ],
             "adapter": [
                 {
                     "path": "continuation/adapter/adapter_model.safetensors",

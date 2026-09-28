@@ -1,0 +1,4 @@
+{"id":"child-train-replay-track","input":"Check the delivery status for order C-1001.","route":{"name":"track_order","arguments":{"order_id":"C-1001"}}}
+{"id":"child-train-replay-cancel","input":"Cancel my pending order C-1002.","route":{"name":"cancel_order","arguments":{"order_id":"C-1002"}}}
+{"id":"child-train-replay-return","input":"Return the item from order C-1003.","route":{"name":"return_order","arguments":{"order_id":"C-1003"}}}
+{"id":"child-train-add-shipping","input":"Add 1 Main Street to the shipping address for order C-1004.","route":{"name":"add_shipping_address","arguments":{"order_id":"C-1004","address":"1 Main Street"}}}

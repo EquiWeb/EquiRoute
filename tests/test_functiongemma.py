@@ -23,7 +23,9 @@ def test_compiles_the_pinned_functiongemma_conversation_exactly() -> None:
 
     compiled = compile_functiongemma(example, registry)
 
-    assert compiled == (FIXTURES / "stage2-conversation.txt").read_text(encoding="utf-8")
+    assert compiled == (FIXTURES / "stage2-conversation.txt").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_renders_the_input_only_prompt_as_the_exact_golden_prefix() -> None:

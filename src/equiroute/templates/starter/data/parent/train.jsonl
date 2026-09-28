@@ -1,0 +1,3 @@
+{"id":"parent-train-track","input":"Where is order P-1001?","route":{"name":"track_order","arguments":{"order_id":"P-1001"}}}
+{"id":"parent-train-cancel","input":"Cancel order P-1002 before it ships.","route":{"name":"cancel_order","arguments":{"order_id":"P-1002"}}}
+{"id":"parent-train-return","input":"I need to return delivered order P-1003.","route":{"name":"return_order","arguments":{"order_id":"P-1003"}}}

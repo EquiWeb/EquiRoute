@@ -37,9 +37,14 @@ from .schemas import (
     TrainingConfig,
     TrainingManifest,
 )
-from .training import TrainingError, _read_manifest, _verify_existing_export, _write_json
+from .training import (
+    TrainingError,
+    _read_manifest,
+    _verify_existing_export,
+    _write_json,
+)
 
-_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "2"
 _MODEL_DIRECTORY = "model"
 _REPORT_PATH = Path("equiroute") / "semantic-evaluation.json"
 _INVALID_CATEGORIES = (
@@ -75,7 +80,9 @@ def score_completions(
     gold_examples = list(examples)
     completions = list(raw_completions)
     if not gold_examples:
-        raise EvaluationError("Evaluation data is empty; provide at least one validated example.")
+        raise EvaluationError(
+            "Evaluation data is empty; provide at least one validated example."
+        )
     if len(gold_examples) != len(completions):
         raise EvaluationError(
             "Evaluation example and raw completion counts differ: "
@@ -87,7 +94,9 @@ def score_completions(
             f"report records {data.examples}, received {len(gold_examples)}."
         )
     if not isinstance(artifact, str) or not artifact:
-        raise EvaluationError("Evaluation artifact provenance must be a non-empty string.")
+        raise EvaluationError(
+            "Evaluation artifact provenance must be a non-empty string."
+        )
 
     for index, example in enumerate(gold_examples, start=1):
         try:
@@ -104,7 +113,9 @@ def score_completions(
     support = {name: 0 for name in route_names}
     predictions = {name: 0 for name in route_names}
     true_positives = {name: 0 for name in route_names}
-    confusion = {name: {predicted: 0 for predicted in route_names} for name in route_names}
+    confusion = {
+        name: {predicted: 0 for predicted in route_names} for name in route_names
+    }
     invalid_counts = {category: 0 for category in _INVALID_CATEGORIES}
     representatives: list[RepresentativeError] = []
     seen_failures: set[tuple[str, str | None, str | None]] = set()
@@ -282,7 +293,9 @@ def _evaluate_artifact_inputs(
             for example in examples
         ]
     except Exception as error:
-        raise EvaluationError(f"Could not render evaluation prompts: {error}") from error
+        raise EvaluationError(
+            f"Could not render evaluation prompts: {error}"
+        ) from error
     raw_completions = _generate_completions(model_directory, prompts, config)
     report = score_completions(
         examples,
@@ -325,7 +338,9 @@ def evaluate_loaded_artifact(
             for example in examples
         ]
     except Exception as error:
-        raise EvaluationError(f"Could not render evaluation prompts: {error}") from error
+        raise EvaluationError(
+            f"Could not render evaluation prompts: {error}"
+        ) from error
     raw_completions = _generate_loaded_completions(
         model, tokenizer, torch, device, prompts, config
     )
@@ -354,6 +369,7 @@ def compare_continuation_evaluations(
         parent.metrics.argument_accuracy - child.metrics.argument_accuracy
     )
     return ComparativeEvaluation(
+        schema_version="2",
         regression_data=parent.data,
         parent=parent,
         child=child,
@@ -428,7 +444,9 @@ def _artifact_directory(artifact: TrainingArtifact | str | Path) -> Path:
             "Evaluation requires the TrainingArtifact returned by train_router or its artifact directory."
         )
     if not directory.is_dir():
-        raise EvaluationError(f"Artifact directory {directory} does not exist or is not a directory.")
+        raise EvaluationError(
+            f"Artifact directory {directory} does not exist or is not a directory."
+        )
     return directory.resolve()
 
 
@@ -452,7 +470,9 @@ def _artifact_registry(directory: Path) -> RouteRegistry:
     try:
         return load_route_registry(source)
     except EquiRouteError as error:
-        raise EvaluationError(f"Could not load artifact route registry {source}: {error}") from error
+        raise EvaluationError(
+            f"Could not load artifact route registry {source}: {error}"
+        ) from error
 
 
 def _artifact_config(directory: Path) -> TrainingConfig:
@@ -460,7 +480,9 @@ def _artifact_config(directory: Path) -> TrainingConfig:
     try:
         return load_training_config(source)
     except EquiRouteError as error:
-        raise EvaluationError(f"Could not load artifact run configuration {source}: {error}") from error
+        raise EvaluationError(
+            f"Could not load artifact run configuration {source}: {error}"
+        ) from error
 
 
 def _verify_registry_fingerprint(
@@ -479,9 +501,13 @@ def _evaluation_data_path(data: str | Path) -> Path:
     try:
         source = Path(data)
     except TypeError as error:
-        raise EvaluationError("Evaluation data path must be a string or pathlib.Path.") from error
+        raise EvaluationError(
+            "Evaluation data path must be a string or pathlib.Path."
+        ) from error
     if not source.is_file():
-        raise EvaluationError(f"Evaluation data file {source} does not exist or is not a file.")
+        raise EvaluationError(
+            f"Evaluation data file {source} does not exist or is not a file."
+        )
     return source.resolve()
 
 
@@ -489,9 +515,13 @@ def _load_evaluation_examples(source: Path, registry: RouteRegistry) -> list[Exa
     try:
         examples = load_examples(source, registry)
     except EquiRouteError as error:
-        raise EvaluationError(f"Could not read validated evaluation data {source}: {error}") from error
+        raise EvaluationError(
+            f"Could not read validated evaluation data {source}: {error}"
+        ) from error
     if not examples:
-        raise EvaluationError(f"Evaluation data {source} is empty; provide at least one validated example.")
+        raise EvaluationError(
+            f"Evaluation data {source} is empty; provide at least one validated example."
+        )
     return examples
 
 
@@ -552,12 +582,16 @@ def _generate_loaded_completions(
                     max_new_tokens=config.max_new_tokens,
                 )
             completions.append(
-                tokenizer.decode(generated[0][prompt_length:], skip_special_tokens=False)
+                tokenizer.decode(
+                    generated[0][prompt_length:], skip_special_tokens=False
+                )
             )
     except EvaluationError:
         raise
     except Exception as error:
-        raise EvaluationError(f"Could not generate evaluation completions: {error}") from error
+        raise EvaluationError(
+            f"Could not generate evaluation completions: {error}"
+        ) from error
     return completions
 
 
@@ -584,4 +618,6 @@ def _write_report(path: Path, report: EvaluationReport) -> None:
     try:
         _write_json(path, report.model_dump(mode="json"))
     except TrainingError as error:
-        raise EvaluationError(f"Could not write semantic evaluation report {path}: {error}") from error
+        raise EvaluationError(
+            f"Could not write semantic evaluation report {path}: {error}"
+        ) from error

@@ -44,7 +44,9 @@ def _training_config() -> dict[str, object]:
     }
 
 
-def _report(*, child: bool, data_fingerprint: str = _DATA_FINGERPRINT) -> dict[str, object]:
+def _report(
+    *, child: bool, data_fingerprint: str = _DATA_FINGERPRINT
+) -> dict[str, object]:
     routes: list[dict[str, object]]
     confusion: list[dict[str, object]]
     if child:
@@ -66,7 +68,10 @@ def _report(*, child: bool, data_fingerprint: str = _DATA_FINGERPRINT) -> dict[s
                 "recall": None,
             },
         ]
-        confusion = [{"expected": "alpha", "predicted": {"beta": 1}}, {"expected": "beta", "predicted": {}}]
+        confusion = [
+            {"expected": "alpha", "predicted": {"beta": 1}},
+            {"expected": "beta", "predicted": {}},
+        ]
         route_correct = 0
         argument_correct = 0
         registry_fingerprint = _CHILD_FINGERPRINT
@@ -115,9 +120,24 @@ def _report(*, child: bool, data_fingerprint: str = _DATA_FINGERPRINT) -> dict[s
         ],
         "representative_errors": [],
         "thresholds": [
-            {"name": "valid_decision_rate", "minimum": 0.0, "actual": 1.0, "passed": True},
-            {"name": "route_accuracy", "minimum": 0.0, "actual": route_accuracy, "passed": True},
-            {"name": "argument_accuracy", "minimum": 0.0, "actual": argument_accuracy, "passed": True},
+            {
+                "name": "valid_decision_rate",
+                "minimum": 0.0,
+                "actual": 1.0,
+                "passed": True,
+            },
+            {
+                "name": "route_accuracy",
+                "minimum": 0.0,
+                "actual": route_accuracy,
+                "passed": True,
+            },
+            {
+                "name": "argument_accuracy",
+                "minimum": 0.0,
+                "actual": argument_accuracy,
+                "passed": True,
+            },
         ],
         "passed": True,
     }
@@ -144,9 +164,21 @@ def _manifest() -> dict[str, object]:
         "status": "running",
         "inputs": {
             "route_registry_fingerprint": _CHILD_FINGERPRINT,
-            "train": {"examples": 1, "source_fingerprint": _DATA_FINGERPRINT, "compiled_fingerprint": _DATA_FINGERPRINT},
-            "validation": {"examples": 1, "source_fingerprint": _DATA_FINGERPRINT, "compiled_fingerprint": _DATA_FINGERPRINT},
-            "test": {"examples": 1, "source_fingerprint": _DATA_FINGERPRINT, "compiled_fingerprint": _DATA_FINGERPRINT},
+            "train": {
+                "examples": 1,
+                "source_fingerprint": _DATA_FINGERPRINT,
+                "compiled_fingerprint": _DATA_FINGERPRINT,
+            },
+            "validation": {
+                "examples": 1,
+                "source_fingerprint": _DATA_FINGERPRINT,
+                "compiled_fingerprint": _DATA_FINGERPRINT,
+            },
+            "test": {
+                "examples": 1,
+                "source_fingerprint": _DATA_FINGERPRINT,
+                "compiled_fingerprint": _DATA_FINGERPRINT,
+            },
         },
         "resolved_config": {
             "model": config["model"],
@@ -171,7 +203,12 @@ def _lineage() -> dict[str, object]:
         "parent": {
             "directory": "runs/parent",
             "manifest_sha256": _PARENT_FINGERPRINT,
-            "adapter": [{"path": "continuation/adapter/adapter_model.safetensors", "sha256": _PARENT_FINGERPRINT}],
+            "adapter": [
+                {
+                    "path": "continuation/adapter/adapter_model.safetensors",
+                    "sha256": _PARENT_FINGERPRINT,
+                }
+            ],
             "registry_fingerprint": _PARENT_FINGERPRINT,
         },
         "registry_change": {

@@ -5,13 +5,16 @@ from __future__ import annotations
 import math
 from typing import Any, Literal
 
-from .model import (
-    FUNCTIONGEMMA_LORA_BIAS,
-    FUNCTIONGEMMA_LORA_DROPOUT,
-    FUNCTIONGEMMA_LORA_TARGET_MODULES,
-    FUNCTIONGEMMA_MODEL_ID,
-    FUNCTIONGEMMA_REVISION,
-    FUNCTIONGEMMA_TEMPLATE_ID,
+from .model import FUNCTIONGEMMA_LORA_DROPOUT, FUNCTIONGEMMA_LORA_TARGET_MODULES
+
+from .migrations import (
+    migrate_comparative_evaluation,
+    migrate_dataset_manifest,
+    migrate_dataset_report,
+    migrate_evaluation_report,
+    migrate_training_config,
+    migrate_training_evaluation,
+    migrate_training_manifest,
 )
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -100,8 +103,8 @@ class Example(StrictModel):
 
 
 class ModelConfig(StrictModel):
-    base_model: Literal[FUNCTIONGEMMA_MODEL_ID]
-    revision: Literal[FUNCTIONGEMMA_REVISION]
+    base_model: Literal["google/functiongemma-270m-it"]
+    revision: Literal["39eccb091651513a5dfb56892d3714c1b5b8276c"]
 
 
 class DataConfig(StrictModel):
@@ -151,9 +154,9 @@ class ContinuationConfig(StrictModel):
     max_argument_accuracy_drop: float = Field(default=0.0, ge=0, le=1)
 
 
-
-
 class TrainingConfig(StrictModel):
+    schema_version: Literal["2"]
+
     model: ModelConfig
     routes: str = Field(min_length=1)
     data: DataConfig
@@ -161,6 +164,11 @@ class TrainingConfig(StrictModel):
     output: OutputConfig
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
     continuation: ContinuationConfig | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_training_config(document)
 
 
 class RouteDistribution(StrictModel):
@@ -189,9 +197,14 @@ class DatasetArtifact(StrictModel):
 class DatasetReport(StrictModel):
     """Stage 1 dataset size and route-distribution report."""
 
-    schema_version: Literal["1"]
+    schema_version: Literal["2"]
     example_count: int = Field(ge=0)
     route_distribution: list[RouteDistribution] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_dataset_report(document)
 
     @model_validator(mode="after")
     def validate_example_count(self) -> DatasetReport:
@@ -205,14 +218,17 @@ class DatasetReport(StrictModel):
 class DatasetManifest(StrictModel):
     """Stage 1 dataset provenance, separate from the future training manifest."""
 
-    schema_version: Literal["1"]
+    schema_version: Literal["2"]
     registry_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    source_fingerprint: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
+    source_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     split_seed: int | None = None
     split_ratios: dict[str, float] | None = None
     datasets: dict[str, DatasetArtifact] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_dataset_manifest(document)
 
     @model_validator(mode="after")
     def validate_split_metadata(self) -> DatasetManifest:
@@ -265,6 +281,7 @@ _THRESHOLD_NAMES = (
     "route_accuracy",
     "argument_accuracy",
 )
+
 
 def _same_rate(actual: float, expected: float) -> bool:
     return math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-12)
@@ -429,7 +446,7 @@ class ThresholdResult(StrictModel):
 class EvaluationReport(StrictModel):
     """Strict Stage-4 semantic quality evidence for one artifact and dataset."""
 
-    schema_version: Literal["1"]
+    schema_version: Literal["2"]
     artifact: str = Field(min_length=1)
     model: str = Field(min_length=1)
     registry_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -442,12 +459,18 @@ class EvaluationReport(StrictModel):
         min_length=len(_INVALID_OUTPUT_CATEGORIES),
         max_length=len(_INVALID_OUTPUT_CATEGORIES),
     )
+
     representative_errors: list[RepresentativeError]
     thresholds: list[ThresholdResult] = Field(
         min_length=len(_THRESHOLD_NAMES),
         max_length=len(_THRESHOLD_NAMES),
     )
     passed: bool
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_evaluation_report(document)
 
     @model_validator(mode="after")
     def validate_evidence(self) -> EvaluationReport:
@@ -475,23 +498,22 @@ class EvaluationReport(StrictModel):
         }
         if sum(route.support for route in self.routes) != self.metrics.examples:
             raise ValueError("route support must equal metrics.examples")
-        if sum(route.predictions for route in self.routes) != self.metrics.valid_decisions:
+        if (
+            sum(route.predictions for route in self.routes)
+            != self.metrics.valid_decisions
+        ):
             raise ValueError("route predictions must equal metrics.valid_decisions")
         if (
             sum(route.true_positives for route in self.routes)
             != self.metrics.route_correct
         ):
-            raise ValueError(
-                "route true_positives must equal metrics.route_correct"
-            )
+            raise ValueError("route true_positives must equal metrics.route_correct")
 
         confusion_total = sum(
             sum(row.predicted.values()) for row in self.confusion_matrix
         )
         if confusion_total != self.metrics.valid_decisions:
-            raise ValueError(
-                "confusion predictions must equal metrics.valid_decisions"
-            )
+            raise ValueError("confusion predictions must equal metrics.valid_decisions")
         for route in self.routes:
             row = confusion_by_expected[route.name]
             if sum(row.values()) > route.support:
@@ -499,9 +521,7 @@ class EvaluationReport(StrictModel):
                     "confusion row predictions must not exceed route support"
                 )
             if row.get(route.name, 0) != route.true_positives:
-                raise ValueError(
-                    "confusion diagonal must equal route true_positives"
-                )
+                raise ValueError("confusion diagonal must equal route true_positives")
             predictions = sum(
                 row.predicted.get(route.name, 0) for row in self.confusion_matrix
             )
@@ -524,9 +544,7 @@ class EvaluationReport(StrictModel):
                 "invalid output counts must equal examples minus valid decisions"
             )
 
-        signatures: set[
-            tuple[str, str | None, InvalidOutputCategory | None]
-        ] = set()
+        signatures: set[tuple[str, str | None, InvalidOutputCategory | None]] = set()
         invalid_by_category = {
             item.category: item.count for item in self.invalid_outputs
         }
@@ -565,9 +583,7 @@ class EvaluationReport(StrictModel):
                     "redacted reports must not retain representative input, raw_output, or detail"
                 )
 
-        if [threshold.name for threshold in self.thresholds] != list(
-            _THRESHOLD_NAMES
-        ):
+        if [threshold.name for threshold in self.thresholds] != list(_THRESHOLD_NAMES):
             raise ValueError(
                 "thresholds must contain fixed metrics in promotion-gate order"
             )
@@ -582,9 +598,7 @@ class EvaluationReport(StrictModel):
             "argument_accuracy": self.metrics.argument_accuracy,
         }
         for threshold in self.thresholds:
-            if not _same_rate(
-                threshold.minimum, configured_minimums[threshold.name]
-            ):
+            if not _same_rate(threshold.minimum, configured_minimums[threshold.name]):
                 raise ValueError("threshold minimum must match config")
             if not _same_rate(threshold.actual, actuals[threshold.name]):
                 raise ValueError("threshold actual must match metrics")
@@ -618,15 +632,15 @@ class ResolvedLoRAConfig(StrictModel):
     target_modules: list[str] = Field(
         default_factory=lambda: list(FUNCTIONGEMMA_LORA_TARGET_MODULES)
     )
-    dropout: float = Field(
-        default=FUNCTIONGEMMA_LORA_DROPOUT, ge=0, le=1
-    )
-    bias: Literal["none"] = FUNCTIONGEMMA_LORA_BIAS
+    dropout: float = Field(default=FUNCTIONGEMMA_LORA_DROPOUT, ge=0, le=1)
+    bias: Literal["none"] = "none"
 
     @model_validator(mode="after")
     def validate_functiongemma_targets(self) -> ResolvedLoRAConfig:
         if self.target_modules != list(FUNCTIONGEMMA_LORA_TARGET_MODULES):
-            raise ValueError("target_modules must be the FunctionGemma q_proj/v_proj pair")
+            raise ValueError(
+                "target_modules must be the FunctionGemma q_proj/v_proj pair"
+            )
         if self.dropout != FUNCTIONGEMMA_LORA_DROPOUT:
             raise ValueError("dropout must be the fixed FunctionGemma LoRA value")
         return self
@@ -646,7 +660,7 @@ class ResolvedTrainingConfig(StrictModel):
     """Complete model, compiler, optimizer, LoRA, and checkpoint inputs."""
 
     model: ModelConfig
-    template_id: Literal[FUNCTIONGEMMA_TEMPLATE_ID]
+    template_id: Literal["stage2-functiongemma-native-v1"]
     template_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     training: TrainingOptions
     lora: ResolvedLoRAConfig
@@ -658,7 +672,9 @@ class ResolvedTrainingConfig(StrictModel):
         if self.lora.rank != self.training.lora_rank:
             raise ValueError("LoRA rank must match the resolved training configuration")
         if self.lora.alpha != self.training.lora_alpha:
-            raise ValueError("LoRA alpha must match the resolved training configuration")
+            raise ValueError(
+                "LoRA alpha must match the resolved training configuration"
+            )
         return self
 
 
@@ -680,7 +696,9 @@ class TrainingHardware(StrictModel):
             "cpu": {("float32", "no")},
         }
         if (self.dtype, self.mixed_precision) not in expected[self.device]:
-            raise ValueError("dtype and mixed_precision do not support the selected device")
+            raise ValueError(
+                "dtype and mixed_precision do not support the selected device"
+            )
         return self
 
 
@@ -742,8 +760,9 @@ class RegistryChange(StrictModel):
 
 
 class ComparativeEvaluation(StrictModel):
-    """Regression evidence comparing a child router with its parent."""
+    """Versioned regression evidence comparing a child router with its parent."""
 
+    schema_version: Literal["2"]
     regression_data: DatasetArtifact
     parent: EvaluationReport
     child: EvaluationReport
@@ -751,8 +770,14 @@ class ComparativeEvaluation(StrictModel):
     max_route_accuracy_drop: float = Field(ge=0, le=1)
     route_accuracy_drop: float
     max_argument_accuracy_drop: float = Field(ge=0, le=1)
+
     argument_accuracy_drop: float
     passed: bool
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_comparative_evaluation(document)
 
     @model_validator(mode="after")
     def validate_comparison(self) -> ComparativeEvaluation:
@@ -783,8 +808,7 @@ class ComparativeEvaluation(StrictModel):
                 "route_accuracy_drop must equal parent route_accuracy minus child route_accuracy"
             )
         argument_drop = (
-            self.parent.metrics.argument_accuracy
-            - self.child.metrics.argument_accuracy
+            self.parent.metrics.argument_accuracy - self.child.metrics.argument_accuracy
         )
         if not _same_rate(self.argument_accuracy_drop, argument_drop):
             raise ValueError(
@@ -804,7 +828,6 @@ class ComparativeEvaluation(StrictModel):
         return self
 
 
-
 class PartitionEvaluation(StrictModel):
     """Evaluation metadata recorded for one fixed dataset partition."""
 
@@ -813,17 +836,23 @@ class PartitionEvaluation(StrictModel):
 
 
 class TrainingEvaluation(StrictModel):
-    """Validation selects; sealed test evaluation is recorded afterwards."""
+    """Versioned validation-selection and sealed test-loss evidence."""
 
+    schema_version: Literal["2"]
     validation: PartitionEvaluation
     test: PartitionEvaluation | None = None
     test_used_for_selection: Literal[False] = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_training_evaluation(document)
 
 
 class TrainingManifest(StrictModel):
     """Strict Stage-3 provenance for a resumable FunctionGemma training run."""
 
-    schema_version: Literal["1"]
+    schema_version: Literal["2"]
     status: Literal["running", "completed"]
     inputs: TrainingInputProvenance
     resolved_config: ResolvedTrainingConfig
@@ -835,6 +864,10 @@ class TrainingManifest(StrictModel):
     registry_change: RegistryChange | None = None
     comparative_evaluation: ComparativeEvaluation | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_training_manifest(document)
 
     @model_validator(mode="after")
     def validate_completion_details(self) -> TrainingManifest:
@@ -891,10 +924,9 @@ class TrainingManifest(StrictModel):
                 raise ValueError(
                     "comparative old_route_names must match retained_route_names"
                 )
-            expected_child_routes = (
-                self.registry_change.retained_route_names
-                + [route.name for route in self.registry_change.added_routes]
-            )
+            expected_child_routes = self.registry_change.retained_route_names + [
+                route.name for route in self.registry_change.added_routes
+            ]
             actual_child_routes = [
                 route.name for route in self.comparative_evaluation.child.routes
             ]

@@ -49,7 +49,7 @@ def test_parses_native_completion_despite_member_order_and_harmless_whitespace()
         ("model response", "missing_function_call"),
         ("<start_function_call>call:submit_ticket{}", "malformed_function_call"),
         (
-            "<start_function_call>call:submit_ticket{subject:\"Cannot sign in\"}"
+            '<start_function_call>call:submit_ticket{subject:"Cannot sign in"}'
             "<end_function_call>",
             "invalid_argument_syntax",
         ),
@@ -92,4 +92,7 @@ def test_reference_renderers_preserve_decision_semantics():
     tool_call = openai["tool_calls"][0]
     assert tool_call["type"] == "function"
     assert tool_call["function"]["name"] == decision.name
-    assert json.loads(openai["tool_calls"][0]["function"]["arguments"]) == decision.arguments
+    assert (
+        json.loads(openai["tool_calls"][0]["function"]["arguments"])
+        == decision.arguments
+    )

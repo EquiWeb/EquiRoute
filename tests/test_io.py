@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 from equiroute.errors import ConfigLoadError, ExampleLoadError, RegistryLoadError
-from equiroute.io import iter_examples, load_examples, load_route_registry, load_training_config
+from equiroute.io import (
+    iter_examples,
+    load_examples,
+    load_route_registry,
+    load_training_config,
+)
 
 
 def _registry_file(tmp_path):
@@ -57,7 +62,10 @@ def test_rejects_unknown_selected_route_with_line_context(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ExampleLoadError, match=r"examples\.jsonl:1: route\.name: unknown route 'unknown'"):
+    with pytest.raises(
+        ExampleLoadError,
+        match=r"examples\.jsonl:1: route\.name: unknown route 'unknown'",
+    ):
         load_examples(examples, registry)
 
 
@@ -81,7 +89,6 @@ def test_rejects_arguments_outside_the_route_schema(tmp_path):
     )
 
 
-
 def test_rejects_duplicate_example_ids_with_both_line_numbers(tmp_path):
     registry = load_route_registry(_registry_file(tmp_path))
     examples = tmp_path / "examples.jsonl"
@@ -101,6 +108,7 @@ def test_rejects_duplicate_example_ids_with_both_line_numbers(tmp_path):
         match=r"examples\.jsonl:2: id: duplicate example id 'same'; first declared on line 1",
     ):
         load_examples(examples, registry)
+
 
 def test_iter_examples_yields_locations_before_later_row_validation(tmp_path):
     registry = load_route_registry(_registry_file(tmp_path))
@@ -122,7 +130,9 @@ def test_iter_examples_yields_locations_before_later_row_validation(tmp_path):
     assert loaded.example.id == "one"
     assert loaded.source == examples
     assert loaded.line == 1
-    with pytest.raises(ExampleLoadError, match=r"examples\.jsonl:2: \$: malformed JSON"):
+    with pytest.raises(
+        ExampleLoadError, match=r"examples\.jsonl:2: \$: malformed JSON"
+    ):
         next(iterator)
 
 
@@ -145,7 +155,9 @@ def test_rejects_invalid_utf8_with_source_context(tmp_path):
     examples = tmp_path / "examples.jsonl"
     examples.write_bytes(b"\xff")
 
-    with pytest.raises(ExampleLoadError, match=r"examples\.jsonl:1: \$: could not decode UTF-8"):
+    with pytest.raises(
+        ExampleLoadError, match=r"examples\.jsonl:1: \$: could not decode UTF-8"
+    ):
         load_examples(examples, registry)
 
 
@@ -178,8 +190,11 @@ unexpected: true
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigLoadError, match=r"unexpected: Extra inputs are not permitted"):
+    with pytest.raises(
+        ConfigLoadError, match=r"unexpected: Extra inputs are not permitted"
+    ):
         load_training_config(config)
+
 
 def test_rejects_unpinned_or_unsupported_base_model(tmp_path):
     config = tmp_path / "config.yaml"

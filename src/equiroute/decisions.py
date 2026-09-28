@@ -49,7 +49,9 @@ def _argument_errors(arguments: dict[str, Any], route: Route) -> list[str]:
 
     for name, value in arguments.items():
         property_schema = schema.properties.get(name)
-        if property_schema is not None and not _matches_primitive(value, property_schema.type):
+        if property_schema is not None and not _matches_primitive(
+            value, property_schema.type
+        ):
             errors.append(
                 f"argument {name!r} must be {property_schema.type}, got {_json_type_name(value)}"
             )
@@ -63,14 +65,18 @@ def _argument_correction(arguments: dict[str, Any], route: Route) -> str:
     missing = [name for name in schema.required if name not in arguments]
     if missing:
         corrections.append(
-            "add required argument" + ("s" if len(missing) > 1 else "") + ": "
+            "add required argument"
+            + ("s" if len(missing) > 1 else "")
+            + ": "
             + ", ".join(repr(name) for name in missing)
         )
 
     unknown = [name for name in arguments if name not in schema.properties]
     if unknown:
         corrections.append(
-            "remove unsupported argument" + ("s" if len(unknown) > 1 else "") + ": "
+            "remove unsupported argument"
+            + ("s" if len(unknown) > 1 else "")
+            + ": "
             + ", ".join(repr(name) for name in unknown)
         )
 
@@ -79,9 +85,7 @@ def _argument_correction(arguments: dict[str, Any], route: Route) -> str:
         if property_schema is not None and not _matches_primitive(
             value, property_schema.type
         ):
-            corrections.append(
-                f"set argument {name!r} to a {property_schema.type}"
-            )
+            corrections.append(f"set argument {name!r} to a {property_schema.type}")
     return "; ".join(corrections)
 
 

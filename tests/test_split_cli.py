@@ -21,7 +21,9 @@ def _write_route_sorted_source(path: Path) -> None:
         for number in range(10)
     ]
     path.write_text(
-        "".join(json.dumps(example, separators=(",", ":")) + "\n" for example in examples),
+        "".join(
+            json.dumps(example, separators=(",", ":")) + "\n" for example in examples
+        ),
         encoding="utf-8",
     )
 
@@ -86,7 +88,9 @@ output:
     return config
 
 
-def test_split_stratifies_a_route_sorted_source_and_announces_output(tmp_path: Path) -> None:
+def test_split_stratifies_a_route_sorted_source_and_announces_output(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "route-sorted.jsonl"
     output_directory = tmp_path / "published-splits"
     _write_route_sorted_source(source)
@@ -120,7 +124,9 @@ def test_split_stratifies_a_route_sorted_source_and_announces_output(tmp_path: P
     } == {partition: set(ROUTE_NAMES) for partition in ("train", "validation", "test")}
 
 
-def test_split_refuses_to_overwrite_its_default_output_directory(tmp_path: Path) -> None:
+def test_split_refuses_to_overwrite_its_default_output_directory(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "source.jsonl"
     _write_route_sorted_source(source)
     command = ["split", str(source), "--routes", str(FIXTURES / "routes.yaml")]
@@ -136,7 +142,9 @@ def test_split_refuses_to_overwrite_its_default_output_directory(tmp_path: Path)
 
     assert repeated.exit_code == 1
     assert "Split failed:" in repeated.output
-    assert {path.name: path.read_bytes() for path in output_directory.iterdir()} == original_files
+    assert {
+        path.name: path.read_bytes() for path in output_directory.iterdir()
+    } == original_files
 
 
 def test_validate_rejects_normalized_input_leakage_between_configured_partitions(

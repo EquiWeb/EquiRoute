@@ -107,16 +107,16 @@ class _FakeTrainer:
 
     def train(self, *, resume_from_checkpoint: str | None = None) -> None:
         self.resume_from_checkpoint = resume_from_checkpoint
-        self.batch = self.data_collator(
-            [self.train_dataset[0], self.train_dataset[1]]
-        )
+        self.batch = self.data_collator([self.train_dataset[0], self.train_dataset[1]])
         checkpoint = Path(self.args.values["output_dir"], "checkpoint-1")
         checkpoint.mkdir(parents=True, exist_ok=True)
         (checkpoint / "trainer_state.json").write_text("state", encoding="utf-8")
         if self.__class__.interrupted:
             raise RuntimeError("deliberate interruption")
 
-    def evaluate(self, *, eval_dataset: Any, metric_key_prefix: str) -> dict[str, float]:
+    def evaluate(
+        self, *, eval_dataset: Any, metric_key_prefix: str
+    ) -> dict[str, float]:
         return {f"{metric_key_prefix}_loss": 0.125}
 
     def save_state(self) -> None:
@@ -248,8 +248,16 @@ def test_train_prepares_completion_only_labels_and_writes_complete_artifact(
     assert Path(artifact.manifest_path).is_file()
     assert (Path(artifact.directory) / "equiroute" / "routes.yaml").is_file()
     assert (Path(artifact.directory) / "equiroute" / "run-config.yaml").is_file()
-    assert (Path(artifact.directory) / "continuation" / "adapter" / "config.json").is_file()
+    assert (
+        Path(artifact.directory) / "continuation" / "adapter" / "config.json"
+    ).is_file()
     assert (Path(artifact.directory) / "model" / "config.json").is_file()
+    persisted_evaluation = json.loads(
+        (Path(artifact.directory) / "equiroute" / "evaluation.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert persisted_evaluation["schema_version"] == "2"
 
     trainer = _FakeTrainer.instances[-1]
     records = trainer.train_dataset.records
@@ -259,7 +267,10 @@ def test_train_prepares_completion_only_labels_and_writes_complete_artifact(
             index for index, label in enumerate(record["labels"]) if label != -100
         )
         assert record["labels"][:first_completion] == [-100] * first_completion
-        assert record["labels"][first_completion:] == record["input_ids"][first_completion:]
+        assert (
+            record["labels"][first_completion:]
+            == record["input_ids"][first_completion:]
+        )
     assert trainer.batch is not None
     assert len(trainer.batch["input_ids"].values[0]) == max(
         len(record["input_ids"]) for record in records[:2]
@@ -278,7 +289,9 @@ def test_interrupted_run_resumes_from_retained_epoch_checkpoint(
     with pytest.raises(TrainingError, match="Training did not complete"):
         train_router(config)
 
-    checkpoint = tmp_path / "artifact" / "continuation" / "trainer-state" / "checkpoint-1"
+    checkpoint = (
+        tmp_path / "artifact" / "continuation" / "trainer-state" / "checkpoint-1"
+    )
     assert checkpoint.is_dir()
 
     _FakeTrainer.interrupted = False

@@ -24,11 +24,13 @@ def test_evaluate_prints_a_passing_report(monkeypatch) -> None:
         payload={
             "metrics": {"route_accuracy": 1.0},
             "passed": True,
-            "schema_version": "1",
+            "schema_version": "2",
         },
         passed=True,
     )
-    monkeypatch.setattr("equiroute.cli.evaluate_artifact", lambda artifact, data: report)
+    monkeypatch.setattr(
+        "equiroute.cli.evaluate_artifact", lambda artifact, data: report
+    )
 
     result = CliRunner().invoke(
         app,
@@ -36,7 +38,10 @@ def test_evaluate_prints_a_passing_report(monkeypatch) -> None:
     )
 
     assert result.exit_code == 0
-    assert result.output == '{"metrics":{"route_accuracy":1.0},"passed":true,"schema_version":"1"}\n'
+    assert (
+        result.output
+        == '{"metrics":{"route_accuracy":1.0},"passed":true,"schema_version":"2"}\n'
+    )
 
 
 def test_evaluate_prints_report_before_failing_quality_gate(monkeypatch) -> None:
@@ -44,11 +49,13 @@ def test_evaluate_prints_report_before_failing_quality_gate(monkeypatch) -> None
         payload={
             "metrics": {"route_accuracy": 0.5},
             "passed": False,
-            "schema_version": "1",
+            "schema_version": "2",
         },
         passed=False,
     )
-    monkeypatch.setattr("equiroute.cli.evaluate_artifact", lambda artifact, data: report)
+    monkeypatch.setattr(
+        "equiroute.cli.evaluate_artifact", lambda artifact, data: report
+    )
 
     result = CliRunner().invoke(
         app,
@@ -56,4 +63,7 @@ def test_evaluate_prints_report_before_failing_quality_gate(monkeypatch) -> None
     )
 
     assert result.exit_code == 1
-    assert result.output == '{"metrics":{"route_accuracy":0.5},"passed":false,"schema_version":"1"}\n'
+    assert (
+        result.output
+        == '{"metrics":{"route_accuracy":0.5},"passed":false,"schema_version":"2"}\n'
+    )

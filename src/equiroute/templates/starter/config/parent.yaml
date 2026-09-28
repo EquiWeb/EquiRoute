@@ -1,0 +1,29 @@
+schema_version: "2"
+model:
+  base_model: google/functiongemma-270m-it
+  revision: 39eccb091651513a5dfb56892d3714c1b5b8276c
+routes: ../routes/parent.yaml
+data:
+  train: ../data/parent/train.jsonl
+  validation: ../data/parent/validation.jsonl
+  test: ../data/parent/test.jsonl
+training:
+  seed: 42
+  epochs: 1
+  learning_rate: 0.0002
+  batch_size: 1
+  gradient_accumulation_steps: 1
+  lora_rank: 4
+  lora_alpha: 8
+  max_sequence_length: 1024
+output:
+  directory: ../artifacts/parent-router
+  export: merged_huggingface
+evaluation:
+  arguments: exact
+  redact: false
+  max_new_tokens: 128
+  thresholds:
+    valid_decision_rate: 0.0
+    route_accuracy: 0.0
+    argument_accuracy: 0.0

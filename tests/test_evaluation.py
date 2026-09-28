@@ -16,7 +16,9 @@ FIXTURES = Path(__file__).parent / "fixtures" / "stage4"
 def _inputs():
     registry = load_route_registry(FIXTURES / "routes.yaml")
     examples = load_examples(FIXTURES / "examples.jsonl", registry)
-    completions = (FIXTURES / "completions.txt").read_text(encoding="utf-8").splitlines()
+    completions = (
+        (FIXTURES / "completions.txt").read_text(encoding="utf-8").splitlines()
+    )
     return registry, examples, completions
 
 
@@ -24,7 +26,9 @@ def _provenance(examples: list[object]) -> DatasetArtifact:
     return DatasetArtifact(examples=len(examples), fingerprint="a" * 64)
 
 
-def test_scores_fixed_raw_predictions_semantically_and_applies_inclusive_gates() -> None:
+def test_scores_fixed_raw_predictions_semantically_and_applies_inclusive_gates() -> (
+    None
+):
     registry, examples, completions = _inputs()
     config = EvaluationConfig(
         thresholds=EvaluationThresholds(
@@ -43,7 +47,7 @@ def test_scores_fixed_raw_predictions_semantically_and_applies_inclusive_gates()
         data=_provenance(examples),
     )
 
-    assert report.schema_version == "1"
+    assert report.schema_version == "2"
     assert report.artifact == "fixture-artifact"
     assert report.model == "model"
     assert report.registry_fingerprint == _registry_fingerprint(registry)

@@ -104,7 +104,9 @@ class _FakeTrainer:
         checkpoint.mkdir(parents=True, exist_ok=True)
         (checkpoint / "trainer_state.json").write_text("state", encoding="utf-8")
 
-    def evaluate(self, *, eval_dataset: Any, metric_key_prefix: str) -> dict[str, float]:
+    def evaluate(
+        self, *, eval_dataset: Any, metric_key_prefix: str
+    ) -> dict[str, float]:
         del eval_dataset
         return {f"{metric_key_prefix}_loss": 0.125}
 
@@ -144,7 +146,9 @@ def _fake_stack() -> Any:
         return str(checkpoints[-1]) if checkpoints else None
 
     transformers = SimpleNamespace(
-        AutoTokenizer=SimpleNamespace(from_pretrained=lambda *_args, **_kwargs: _FakeTokenizer()),
+        AutoTokenizer=SimpleNamespace(
+            from_pretrained=lambda *_args, **_kwargs: _FakeTokenizer()
+        ),
         AutoModelForCausalLM=SimpleNamespace(
             from_pretrained=lambda *_args, **_kwargs: _FakeModel()
         ),
@@ -154,14 +158,17 @@ def _fake_stack() -> Any:
         trainer_utils=SimpleNamespace(get_last_checkpoint=last_checkpoint),
     )
     return training._TrainingStack(
-        torch=_FakeTorch(), transformers=transformers, peft=_FakePeft(), accelerate=object()
+        torch=_FakeTorch(),
+        transformers=transformers,
+        peft=_FakePeft(),
+        accelerate=object(),
     )
 
 
 def _write_registry(path: Path, names: list[str]) -> None:
     routes = "\n".join(
         f"""  - name: {name}
-    description: Handle {name.replace('_', ' ')} requests.
+    description: Handle {name.replace("_", " ")} requests.
     parameters:
       type: object
       additionalProperties: false"""
@@ -179,7 +186,9 @@ def _write_records(path: Path, names: list[str], prefix: str) -> None:
         }
         for name in names
     ]
-    path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+    path.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8"
+    )
 
 
 def _write_project(
@@ -194,9 +203,13 @@ def _write_project(
     directory.mkdir()
     _write_registry(directory / "routes.yaml", names)
     for partition in ("train", "validation", "test"):
-        _write_records(directory / f"{partition}.jsonl", names, f"{directory.name}-{partition}")
+        _write_records(
+            directory / f"{partition}.jsonl", names, f"{directory.name}-{partition}"
+        )
     if continuation:
-        _write_records(directory / regression, names[:-1], f"{directory.name}-regression")
+        _write_records(
+            directory / regression, names[:-1], f"{directory.name}-regression"
+        )
     continuation_yaml = (
         f"""continuation:
   regression: {regression}
@@ -234,11 +247,12 @@ output:
     return config
 
 
-
-
 def _parent_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     parent_config = _write_project(
-        tmp_path / "parent-source", ["alpha", "beta"], output="parent-artifact", continuation=False
+        tmp_path / "parent-source",
+        ["alpha", "beta"],
+        output="parent-artifact",
+        continuation=False,
     )
     monkeypatch.setattr(training, "_load_training_stack", _fake_stack)
     return Path(train_router(parent_config).directory)
@@ -298,7 +312,10 @@ def test_continue_trains_from_verified_snapshot_with_child_evaluation_policy_wit
     manifest = training._read_manifest(child / "equiroute" / "manifest.json")
     assert artifact.status == "completed"
     snapshot = _FakePeft.adapter_loads[0][1]
-    assert [is_trainable for _, _, is_trainable in _FakePeft.adapter_loads] == [True, False]
+    assert [is_trainable for _, _, is_trainable in _FakePeft.adapter_loads] == [
+        True,
+        False,
+    ]
     assert snapshot != parent_adapter
     assert _FakePeft.adapter_loads[1][1] == snapshot
     assert snapshot.parts[-2:] == ("continuation", "adapter")
@@ -314,14 +331,23 @@ def test_continue_trains_from_verified_snapshot_with_child_evaluation_policy_wit
         "beta",
         "gamma",
     ]
-    assert [route.name for route in calls[1]["scoring_registry"].routes] == ["alpha", "beta"]
-    assert [route.name for route in calls[1]["prompt_registry"].routes] == ["alpha", "beta"]
+    assert [route.name for route in calls[1]["scoring_registry"].routes] == [
+        "alpha",
+        "beta",
+    ]
+    assert [route.name for route in calls[1]["prompt_registry"].routes] == [
+        "alpha",
+        "beta",
+    ]
     assert [route.name for route in calls[2]["scoring_registry"].routes] == [
         "alpha",
         "beta",
         "gamma",
     ]
-    assert [route.name for route in calls[2]["prompt_registry"].routes] == ["alpha", "beta"]
+    assert [route.name for route in calls[2]["prompt_registry"].routes] == [
+        "alpha",
+        "beta",
+    ]
     assert calls[1]["data"] == calls[2]["data"]
     assert calls[0]["config"] == calls[1]["config"] == calls[2]["config"]
     assert calls[0]["config"].redact is True
@@ -330,7 +356,10 @@ def test_continue_trains_from_verified_snapshot_with_child_evaluation_policy_wit
     assert parent_manifest.read_bytes() == parent_manifest_bytes
     assert (parent_adapter / "config.json").read_bytes() == parent_adapter_bytes
     assert manifest.parent is not None
-    assert manifest.parent.manifest_sha256 == hashlib.sha256(parent_manifest_bytes).hexdigest()
+    assert (
+        manifest.parent.manifest_sha256
+        == hashlib.sha256(parent_manifest_bytes).hexdigest()
+    )
     assert manifest.registry_change is not None
     assert manifest.registry_change.retained_route_names == ["alpha", "beta"]
     assert [route.name for route in manifest.registry_change.added_routes] == ["gamma"]
@@ -347,7 +376,10 @@ def test_continue_trains_from_verified_snapshot_with_child_evaluation_policy_wit
             for representative in report.representative_errors
         )
     persisted = child / "equiroute" / "continuation-evaluation.json"
-    assert json.loads(persisted.read_text(encoding="utf-8")) == comparison.model_dump(mode="json")
+    assert json.loads(persisted.read_text(encoding="utf-8"))["schema_version"] == "2"
+    assert json.loads(persisted.read_text(encoding="utf-8")) == comparison.model_dump(
+        mode="json"
+    )
     semantic = json.loads(
         (child / "equiroute" / "semantic-evaluation.json").read_text(encoding="utf-8")
     )
@@ -403,23 +435,29 @@ def test_continuation_does_not_complete_when_held_out_added_route_recall_is_inco
     assert semantic["routes"][-1]["recall"] == 0.0
 
 
-
 def test_continuation_rejects_tampered_adapter_snapshot_before_ml_load(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     parent = _parent_artifact(tmp_path, monkeypatch)
     child_config = _write_project(
-        tmp_path / "child-source", ["alpha", "beta", "gamma"], output="child-artifact", continuation=True
+        tmp_path / "child-source",
+        ["alpha", "beta", "gamma"],
+        output="child-artifact",
+        continuation=True,
     )
     copytree = training.shutil.copytree
 
-    def corrupt_snapshot(source: Any, destination: Any, *args: Any, **kwargs: Any) -> Any:
+    def corrupt_snapshot(
+        source: Any, destination: Any, *args: Any, **kwargs: Any
+    ) -> Any:
         copied = copytree(source, destination, *args, **kwargs)
         Path(destination, "config.json").write_text("tampered", encoding="utf-8")
         return copied
 
     def unexpected_stack_load() -> Any:
-        raise AssertionError("model stack must not load before the adapter snapshot is verified")
+        raise AssertionError(
+            "model stack must not load before the adapter snapshot is verified"
+        )
 
     monkeypatch.setattr(training.shutil, "copytree", corrupt_snapshot)
     monkeypatch.setattr(training, "_load_training_stack", unexpected_stack_load)
@@ -445,13 +483,20 @@ def test_continuation_preflight_rejects_regression_content_overlap_from_each_chi
 ) -> None:
     parent = _parent_artifact(tmp_path, monkeypatch)
     child_config = _write_project(
-        tmp_path / "child-source", ["alpha", "beta", "gamma"], output="child-artifact", continuation=True
+        tmp_path / "child-source",
+        ["alpha", "beta", "gamma"],
+        output="child-artifact",
+        continuation=True,
     )
     child_record = json.loads(
-        (child_config.parent / f"{partition}.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        (child_config.parent / f"{partition}.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
     )
     regression_beta = json.loads(
-        (child_config.parent / "regression.jsonl").read_text(encoding="utf-8").splitlines()[1]
+        (child_config.parent / "regression.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[1]
     )
     regression_alpha = {
         "id": f"regression-{partition}-{overlap}",
@@ -467,12 +512,15 @@ def test_continuation_preflight_rejects_regression_content_overlap_from_each_chi
         )
         expected = "reuses an input"
     (child_config.parent / "regression.jsonl").write_text(
-        "\n".join(json.dumps(record) for record in (regression_alpha, regression_beta)) + "\n",
+        "\n".join(json.dumps(record) for record in (regression_alpha, regression_beta))
+        + "\n",
         encoding="utf-8",
     )
 
     def unexpected_stack_load() -> Any:
-        raise AssertionError("optional model stack must not load during failed preflight")
+        raise AssertionError(
+            "optional model stack must not load during failed preflight"
+        )
 
     monkeypatch.setattr(training, "_load_training_stack", unexpected_stack_load)
     with pytest.raises(TrainingError, match=expected):
@@ -490,10 +538,15 @@ def test_continuation_preflight_rejects_invalid_parent_registry_or_replay_before
 ) -> None:
     parent = _parent_artifact(tmp_path, monkeypatch)
     child_config = _write_project(
-        tmp_path / "child-source", ["alpha", "beta", "gamma"], output="child-artifact", continuation=True
+        tmp_path / "child-source",
+        ["alpha", "beta", "gamma"],
+        output="child-artifact",
+        continuation=True,
     )
     if failure == "tampered_adapter":
-        (parent / "continuation" / "adapter" / "config.json").write_text("tampered", encoding="utf-8")
+        (parent / "continuation" / "adapter" / "config.json").write_text(
+            "tampered", encoding="utf-8"
+        )
         expected = "does not match"
     elif failure == "reordered_routes":
         _write_registry(child_config.parent / "routes.yaml", ["beta", "alpha", "gamma"])
@@ -507,12 +560,16 @@ def test_continuation_preflight_rejects_invalid_parent_registry_or_replay_before
         )
         expected = "must not alias"
     else:
-        train_alpha = (child_config.parent / "train.jsonl").read_text(
-            encoding="utf-8"
-        ).splitlines()[0]
-        regression_beta = (child_config.parent / "regression.jsonl").read_text(
-            encoding="utf-8"
-        ).splitlines()[1]
+        train_alpha = (
+            (child_config.parent / "train.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[0]
+        )
+        regression_beta = (
+            (child_config.parent / "regression.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[1]
+        )
         (child_config.parent / "copied-regression.jsonl").write_text(
             train_alpha + "\n" + regression_beta + "\n",
             encoding="utf-8",
@@ -527,7 +584,9 @@ def test_continuation_preflight_rejects_invalid_parent_registry_or_replay_before
         expected = "reuses"
 
     def unexpected_stack_load() -> Any:
-        raise AssertionError("optional model stack must not load during failed preflight")
+        raise AssertionError(
+            "optional model stack must not load during failed preflight"
+        )
 
     monkeypatch.setattr(training, "_load_training_stack", unexpected_stack_load)
     with pytest.raises(TrainingError, match=expected):
@@ -540,11 +599,16 @@ def test_train_rejects_continuation_configuration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = _write_project(
-        tmp_path / "child-source", ["alpha", "beta"], output="child-artifact", continuation=True
+        tmp_path / "child-source",
+        ["alpha", "beta"],
+        output="child-artifact",
+        continuation=True,
     )
 
     def unexpected_stack_load() -> Any:
-        raise AssertionError("ordinary train must reject continuation before optional imports")
+        raise AssertionError(
+            "ordinary train must reject continuation before optional imports"
+        )
 
     monkeypatch.setattr(training, "_load_training_stack", unexpected_stack_load)
     with pytest.raises(TrainingError, match="must use.*continue"):
