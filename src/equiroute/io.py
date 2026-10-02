@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
@@ -15,21 +16,27 @@ from .decisions import DecisionValidationError, _argument_correction, validate_d
 from .errors import (
     ConfigLoadError,
     ExampleLoadError,
+    LabelingConfigError,
     RawIngestionConfigError,
     RawInputLoadError,
     RegistryLoadError,
+    SanitizedArtifactLoadError,
     SourceError,
 )
 from .migrations import (
     SchemaMigrationError,
+    migrate_labeling_config,
     migrate_raw_ingestion_config,
+    migrate_raw_ingestion_manifest,
     migrate_training_config,
 )
 
 from .schemas import (
     Decision,
     Example,
+    LabelingConfig,
     RawIngestionConfig,
+    RawIngestionManifest,
     RawInputRow,
     RouteRegistry,
     TrainingConfig,
@@ -61,6 +68,24 @@ class LoadedRawInput:
         """Return the canonical row under its concise pipeline name."""
 
         return self.raw_input
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedSanitizedInput:
+    """A verified Stage-7 row with its sanitized artifact location."""
+
+    row: RawInputRow
+    source: Path
+    line: int
+
+
+@dataclass(frozen=True, slots=True)
+class SanitizedHandoff:
+    """A fully verified Stage-7 handoff safe to pass to provider work."""
+
+    directory: Path
+    manifest: RawIngestionManifest
+    rows: tuple[LoadedSanitizedInput, ...]
 
 
 def iter_raw_inputs(
@@ -220,6 +245,123 @@ def load_raw_ingestion_config(path: str | Path) -> RawIngestionConfig:
     return _validate_raw_ingestion_config(document, source)
 
 
+def load_labeling_config(path: str | Path) -> LabelingConfig:
+    """Load one strict v2-only, non-secret candidate-labeling configuration."""
+
+    source = Path(path)
+    document = _load_yaml_mapping(source, LabelingConfigError, "labeling configuration")
+    document = _migrate_labeling_config(document, source)
+    return _validate_labeling_config(document, source)
+
+
+def resolve_labeling_paths(
+    config_path: str | Path, config: LabelingConfig
+) -> tuple[Path, Path, Path]:
+    """Resolve handoff, registry, and output paths relative to a config file."""
+
+    directory = Path(config_path).parent
+    return (
+        directory / config.input.directory,
+        directory / config.routes,
+        directory / config.output.directory,
+    )
+
+
+def load_labeling_route_registry(
+    config_path: str | Path, config: LabelingConfig
+) -> RouteRegistry:
+    """Load the route registry selected by a labeling configuration."""
+
+    _, registry_path, _ = resolve_labeling_paths(config_path, config)
+    return load_route_registry(registry_path)
+
+
+def load_sanitized_handoff(path: str | Path) -> SanitizedHandoff:
+    """Read only a Stage-7 handoff and verify its rows before provider work."""
+
+    directory = Path(path)
+    manifest_path = directory / "manifest.json"
+    rows_path = directory / "rows.jsonl"
+    manifest_document = _load_sanitized_manifest(manifest_path)
+    try:
+        migrated = migrate_raw_ingestion_manifest(manifest_document)
+    except SchemaMigrationError as error:
+        raise SanitizedArtifactLoadError(
+            str(error),
+            source=manifest_path,
+            path="schema_version",
+            correction='use the Stage-7 schema_version "2" manifest',
+        ) from error
+    assert isinstance(migrated, dict)
+    manifest = _validate_model(
+        migrated,
+        RawIngestionManifest,
+        manifest_path,
+        SanitizedArtifactLoadError,
+        "sanitized handoff manifest",
+    )
+
+    try:
+        rows_bytes = rows_path.read_bytes()
+    except OSError as error:
+        raise SanitizedArtifactLoadError(
+            "could not read sanitized rows",
+            source=rows_path,
+            correction="ensure the Stage-7 rows.jsonl artifact exists and is readable",
+        ) from error
+
+    if hashlib.sha256(rows_bytes).hexdigest() != manifest.output.sha256:
+        raise SanitizedArtifactLoadError(
+            "sanitized rows SHA-256 does not match the handoff manifest",
+            source=rows_path,
+            path="sha256",
+            correction="use the unmodified rows.jsonl emitted with this manifest",
+        )
+    if rows_bytes and not rows_bytes.endswith(b"\n"):
+        raise SanitizedArtifactLoadError(
+            "sanitized rows must end every JSON object with an LF",
+            source=rows_path,
+            correction="use the rows.jsonl emitted by Stage 7",
+        )
+
+    row_count = rows_bytes.count(b"\n")
+    if row_count != manifest.output.rows:
+        raise SanitizedArtifactLoadError(
+            "sanitized row count does not match the handoff manifest",
+            source=rows_path,
+            path="rows",
+            correction="use the rows.jsonl emitted with this manifest",
+        )
+
+    rows: list[LoadedSanitizedInput] = []
+    ids: dict[str, int] = {}
+    for line_number, raw_line in enumerate(
+        rows_bytes.splitlines(keepends=True), start=1
+    ):
+        document = _load_sanitized_json_object(rows_path, line_number, raw_line)
+        row = _validate_model(
+            document,
+            RawInputRow,
+            rows_path,
+            SanitizedArtifactLoadError,
+            "sanitized input row",
+            line_number,
+        )
+        first_line = ids.get(row.id)
+        if first_line is not None:
+            raise SanitizedArtifactLoadError(
+                f"duplicate sanitized input id; first declared on line {first_line}",
+                source=rows_path,
+                line=line_number,
+                path="id",
+                correction="use the unmodified Stage-7 handoff",
+            )
+        ids[row.id] = line_number
+        rows.append(LoadedSanitizedInput(row=row, source=rows_path, line=line_number))
+
+    return SanitizedHandoff(directory=directory, manifest=manifest, rows=tuple(rows))
+
+
 def load_examples(path: str | Path, registry: RouteRegistry) -> list[Example]:
     """Load every validated JSONL example into a list for existing callers."""
 
@@ -280,6 +422,62 @@ def _load_raw_json_object(
             line=line_number,
             path="$",
             correction="replace this line with a JSON object",
+        )
+    return document
+
+
+def _load_sanitized_manifest(source: Path) -> dict[str, Any]:
+    """Load a JSON object without exposing handoff contents in diagnostics."""
+
+    try:
+        raw_document = source.read_bytes()
+    except OSError as error:
+        raise SanitizedArtifactLoadError(
+            "could not read sanitized handoff manifest",
+            source=source,
+            correction="ensure manifest.json exists in the Stage-7 handoff directory",
+        ) from error
+    try:
+        text = raw_document.decode("utf-8")
+        document = json.loads(text, parse_constant=_reject_nonstandard_json_constant)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise SanitizedArtifactLoadError(
+            "sanitized handoff manifest must be valid UTF-8 JSON",
+            source=source,
+            correction="use the manifest.json emitted by Stage 7",
+        ) from error
+    if not isinstance(document, dict):
+        raise SanitizedArtifactLoadError(
+            "sanitized handoff manifest must be a JSON object",
+            source=source,
+            correction="use the manifest.json emitted by Stage 7",
+        )
+    return document
+
+
+def _load_sanitized_json_object(
+    source: Path, line_number: int, raw_line: bytes
+) -> dict[str, Any]:
+    """Parse one sanitized row without reflecting untrusted input content."""
+
+    try:
+        text = raw_line.decode("utf-8")
+        document = json.loads(text, parse_constant=_reject_nonstandard_json_constant)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise SanitizedArtifactLoadError(
+            "sanitized row must be valid UTF-8 JSON",
+            source=source,
+            line=line_number,
+            path="$",
+            correction="use the unmodified rows.jsonl emitted by Stage 7",
+        ) from error
+    if not isinstance(document, dict):
+        raise SanitizedArtifactLoadError(
+            "sanitized row must be a JSON object",
+            source=source,
+            line=line_number,
+            path="$",
+            correction="use the unmodified rows.jsonl emitted by Stage 7",
         )
     return document
 
@@ -546,6 +744,20 @@ def _migrate_raw_ingestion_config(
     return migrated
 
 
+def _migrate_labeling_config(document: dict[str, Any], source: Path) -> dict[str, Any]:
+    try:
+        migrated = migrate_labeling_config(document)
+    except SchemaMigrationError as error:
+        raise LabelingConfigError(
+            str(error),
+            source=source,
+            path="schema_version",
+            correction='set schema_version to "2"',
+        ) from error
+    assert isinstance(migrated, dict)
+    return migrated
+
+
 def _validate_raw_ingestion_config(
     document: dict[str, Any], source: Path
 ) -> RawIngestionConfig:
@@ -558,6 +770,22 @@ def _validate_raw_ingestion_config(
         )
         raise RawIngestionConfigError(
             f"invalid raw ingestion configuration: {details}",
+            source=source,
+            path=_format_location(issues[0]["loc"]),
+            correction=_validation_correction(error),
+        ) from error
+
+
+def _validate_labeling_config(document: dict[str, Any], source: Path) -> LabelingConfig:
+    try:
+        return LabelingConfig.model_validate(document)
+    except ValidationError as error:
+        issues = error.errors()
+        details = "; ".join(
+            f"{_format_location(issue['loc'])}: {issue['msg']}" for issue in issues
+        )
+        raise LabelingConfigError(
+            f"invalid labeling configuration: {details}",
             source=source,
             path=_format_location(issues[0]["loc"]),
             correction=_validation_correction(error),

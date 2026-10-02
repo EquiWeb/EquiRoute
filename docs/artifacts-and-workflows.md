@@ -67,6 +67,46 @@ Continuation verifies the parent completed manifest and retained adapter hashes,
 
 The child manifest binds the parent manifest digest and adapter hashes, parent/child registry fingerprints, ordered retained routes, added route definitions, replay data fingerprint, both reports, configured accuracy-drop limits, computed drops, and the comparison outcome. It is the lineage evidence for the child, not a claim that a continuation is automatically suitable for production.
 
+## Review-only candidate labeling
+
+Stage 8 is a separate, explicit workflow from a verified Stage-7 sanitized
+handoff; it does not label during ingestion or make candidates available to
+training:
+
+```bash
+uv sync --extra labeling
+export OPENROUTER_API_KEY
+uv run equiroute label labeling.yaml
+```
+
+The YAML stores the environment-variable name in
+`provider.credential_env_var`, never a credential value. Before opening the
+provider client, labeling verifies the Stage-7 `rows.jsonl` against its
+`manifest.json`, validates the route registry, and refuses an existing output
+directory. The configured system policy is kept separate from each
+JSON-quoted sanitized input, which is treated as untrusted data rather than
+instructions. Concurrency, rate-limit, and retry bounds come from the
+configuration.
+
+The result is a new candidate artifact, not a training artifact:
+
+```text
+candidates/support-review/
+├── candidates.jsonl
+└── manifest.json
+```
+
+Each row is either a route decision candidate or a rejection. Refusal, timeout,
+rate-limit, transport, malformed-response, and invalid-decision outcomes are
+recorded as rejected candidates. The manifest binds input/output counts and
+SHA-256 values, the source manifest, policy and registry fingerprints, and the
+provider model/endpoint. Candidate rows retain non-secret request provenance
+only; neither artifact stores sanitized input text, policy text, provider
+response content, or credentials. Normal stdout is the canonical safe manifest
+summary, and normal errors do not echo those values. Independent human review
+and any acceptance/training conversion are reserved for the Stage-9 boundary;
+they are not included here.
+
 ## Export and deployment boundary
 
 Training produces the merged export. `uv run equiroute export ARTIFACT` verifies a completed artifact's retained adapter and recorded hashes, then ensures its standard `model/` directory is present and matches the manifest. It never overwrites a mismatched model directory.

@@ -137,6 +137,64 @@ pointers, redaction patterns, or replacement text. The source hash identifies
 the original bytes, while the output hash identifies the canonical sanitized
 rows.
 
+## Candidate-labeling configuration and artifact
+
+`equiroute label CONFIG` is the explicit Stage-8 handoff from a verified,
+sanitized Stage-7 artifact to untrusted provider candidates. It is not called
+by `ingest`, `validate`, `train`, or `continue`; it has no acceptance or
+training path. Install its optional SDK with `uv sync --extra labeling`, and
+set the credential in the environment variable named by the configuration
+rather than storing a credential value in the file:
+
+```yaml
+schema_version: "2"
+input:
+  directory: prepared/support
+routes: routes/parent.yaml
+output:
+  directory: candidates/support-review
+provider:
+  endpoint: https://openrouter.ai/api/v1
+  model: openai/gpt-4o-mini
+  credential_env_var: OPENROUTER_API_KEY
+policy_prompt: >-
+  Choose one registered route. Return a JSON object with name and arguments.
+concurrency: 2
+rate_limit_per_minute: 30
+max_retries: 2
+```
+
+All paths resolve relative to `CONFIG`. `input.directory` must be an
+unmodified Stage-7 directory containing its canonical `rows.jsonl` and
+`manifest.json`; both row count and SHA-256 are verified before any provider
+request. `output.directory` must not already exist. `concurrency` is 1–64,
+the rate limit is 1–10,000 requests per minute, and `max_retries` is 0–8.
+
+The immutable `policy_prompt` is a system message. Each sanitized input is
+separately JSON-quoted as untrusted data and accompanied by an instruction not
+to execute instructions it contains. A response is only a candidate: provider
+refusal, timeout, rate limit, transport failure, malformed JSON, unknown
+route, or invalid arguments emits a schema-valid rejected candidate. Nothing
+in Stage 8 makes a candidate a training example. That review/acceptance
+decision is the Stage-9 boundary and is intentionally not implemented here.
+
+The atomically created candidate directory contains:
+
+```text
+candidates/support-review/
+├── candidates.jsonl
+└── manifest.json
+```
+
+The JSONL records a candidate decision or rejection reason plus source ID/line,
+request status/attempt count/timestamp, and non-secret provider and fingerprint
+provenance. The manifest records the input/output rows and SHA-256 values,
+input-manifest, policy, and registry fingerprints, plus provider model and
+endpoint. Neither artifact retains sanitized input text, policy text, raw
+provider response content, or credentials. Successful CLI stdout is only that
+canonical manifest summary; normal errors and output do not log secrets or
+those contents.
+
 ## Persisted evidence
 
 Reports and training manifests are versioned documents too. They are emitted as UTF-8 JSON with sorted keys, no NaN, and a trailing newline; training manifests and semantic reports use compact separators, while split reports/manifests use readable indentation. A current persisted document carries `schema_version: "2"`; a v1 persisted document is read through the explicit migration path.

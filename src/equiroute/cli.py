@@ -21,9 +21,10 @@ from .errors import (
     RawInputLoadError,
     SourceError,
 )
-from .io import load_route_registry, load_training_config
 from .evaluation import EvaluationError, evaluate_artifact
 from .init import InitError, create_starter_project
+from .io import load_route_registry, load_training_config
+from .labeling import label_sanitized_inputs
 from .raw_input import ingest_raw_inputs
 from .training import TrainingError, continue_router, export_router, train_router
 
@@ -118,6 +119,52 @@ def _safe_ingestion_error(error: SourceError) -> str:
     if error.correction:
         rendered += f"; correction: {error.correction}"
     return rendered
+
+
+def _safe_labeling_error(error: SourceError) -> str:
+    """Render candidate-label setup failures without configuration contents."""
+
+    reason = error.message
+    for unsafe_prefix, safe_reason in (
+        ("could not decode UTF-8:", "could not decode UTF-8"),
+        ("malformed YAML:", "malformed YAML"),
+        ("invalid labeling configuration:", "invalid labeling configuration"),
+    ):
+        if reason.startswith(unsafe_prefix):
+            reason = safe_reason
+            break
+
+    location = error.source
+    if error.line is not None:
+        location += f":{error.line}"
+    if error.path:
+        location += f": {error.path}"
+    rendered = f"{location}: {reason}"
+    if error.correction:
+        rendered += f"; correction: {error.correction}"
+    return rendered
+
+
+@app.command()
+def label(
+    config: Annotated[Path, typer.Argument()],
+) -> None:
+    """Create review-only candidates from a verified sanitized Stage-7 handoff."""
+
+    try:
+        manifest = label_sanitized_inputs(config)
+    except SourceError as error:
+        typer.echo(f"Labeling failed: {_safe_labeling_error(error)}", err=True)
+        raise typer.Exit(code=1) from error
+    except OSError as error:
+        typer.echo(
+            "Labeling failed: could not create the candidate output; "
+            "correction: ensure the output parent exists and is writable",
+            err=True,
+        )
+        raise typer.Exit(code=1) from error
+
+    typer.echo(_canonical_json(manifest.model_dump(mode="json")))
 
 
 @app.command()

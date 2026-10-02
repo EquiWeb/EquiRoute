@@ -1,13 +1,20 @@
 import hashlib
 import json
+import os
 import shutil
 import string
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from typer.testing import CliRunner
 
 from equiroute.cli import app
+from equiroute.errors import LabelingConfigError
 from equiroute.init import create_starter_project
+from equiroute.schemas import LabelingManifest
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -21,6 +28,7 @@ def test_help_lists_the_command_surface() -> None:
         "validate",
         "split",
         "ingest",
+        "label",
         "train",
         "evaluate",
         "continue",
@@ -205,3 +213,109 @@ def test_ingest_reports_safe_source_line_and_reason_without_raw_input(
     assert "JSON Pointer does not resolve in this source row" in result.stderr
     assert "correction:" in result.stderr
     assert "secret@example.com" not in result.output
+
+
+def _labeling_manifest() -> LabelingManifest:
+    return LabelingManifest.model_validate(
+        {
+            "schema_version": "2",
+            "input": {"rows": 2, "sha256": "a" * 64},
+            "input_manifest_fingerprint": "b" * 64,
+            "output": {"rows": 2, "sha256": "c" * 64},
+            "policy_fingerprint": "d" * 64,
+            "registry_fingerprint": "e" * 64,
+            "provider_model": "openai/test-model",
+            "provider_endpoint": "https://openrouter.ai/api/v1",
+        }
+    )
+
+
+def test_label_emits_only_the_canonical_safe_manifest_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _labeling_manifest()
+    monkeypatch.setattr("equiroute.cli.label_sanitized_inputs", lambda config: manifest)
+
+    result = CliRunner().invoke(app, ["label", "labeling.yaml"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stderr == ""
+    assert result.stdout == (
+        json.dumps(
+            manifest.model_dump(mode="json"),
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+
+
+def test_label_reports_setup_failures_without_policy_contents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "equiroute.cli.label_sanitized_inputs",
+        lambda config: (_ for _ in ()).throw(
+            LabelingConfigError(
+                "invalid labeling configuration: policy-secret",
+                source="labeling.yaml",
+                path="policy_prompt",
+                correction="repair the configuration",
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(app, ["label", "labeling.yaml"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert "Labeling failed:" in result.stderr
+    assert (
+        "labeling.yaml: policy_prompt: invalid labeling configuration" in result.stderr
+    )
+    assert "policy-secret" not in result.stderr
+
+
+def test_live_smoke_refuses_without_configured_credential(tmp_path: Path) -> None:
+    config = tmp_path / "labeling-live-smoke.yaml"
+    config.write_text(
+        """schema_version: "2"
+input:
+  directory: sanitized
+routes: routes.yaml
+output:
+  directory: candidates
+provider:
+  endpoint: https://openrouter.ai/api/v1
+  model: openai/test-model
+  credential_env_var: EQUIROUTE_LIVE_SMOKE_TEST_KEY
+policy_prompt: Choose one route.
+concurrency: 1
+rate_limit_per_minute: 1
+max_retries: 0
+""",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment.pop("EQUIROUTE_LIVE_SMOKE_TEST_KEY", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).parents[1] / "scripts" / "openrouter_live_smoke.py"),
+            str(config),
+        ],
+        cwd=Path(__file__).parents[1],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "required credential environment variable EQUIROUTE_LIVE_SMOKE_TEST_KEY" in (
+        result.stderr
+    )

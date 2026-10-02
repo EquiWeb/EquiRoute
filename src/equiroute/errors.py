@@ -56,3 +56,11 @@ class RawIngestionConfigError(SourceError):
 
 class RawInputLoadError(SourceError):
     """A raw JSONL input row could not be read, projected, or validated."""
+
+
+class LabelingConfigError(SourceError):
+    """A candidate-labeling configuration could not be read or validated."""
+
+
+class SanitizedArtifactLoadError(SourceError):
+    """A Stage-7 sanitized handoff could not be verified for labeling."""

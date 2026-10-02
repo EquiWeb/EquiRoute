@@ -42,6 +42,24 @@ def migrate_raw_ingestion_manifest(document: Any) -> Any:
     return _require_current_version(document, document_name="raw ingestion manifest")
 
 
+def migrate_labeling_config(document: Any) -> Any:
+    """Require the only supported candidate-labeling configuration schema."""
+
+    return _require_current_version(document, document_name="labeling configuration")
+
+
+def migrate_label_candidate(document: Any) -> Any:
+    """Require the only supported candidate-label row schema."""
+
+    return _require_current_version(document, document_name="label candidate")
+
+
+def migrate_labeling_manifest(document: Any) -> Any:
+    """Require the only supported candidate-label artifact manifest schema."""
+
+    return _require_current_version(document, document_name="labeling manifest")
+
+
 def migrate_dataset_report(document: Any) -> Any:
     """Migrate a versioned dataset report to the current raw form."""
 
@@ -159,7 +177,7 @@ def _require_current_version(document: Any, *, document_name: str) -> Any:
     if "schema_version" not in document:
         raise SchemaMigrationError(
             f"{document_name} requires schema_version {CURRENT_SCHEMA_VERSION!r}; "
-            "there is no legacy raw-input schema."
+            "there is no supported legacy schema."
         )
     version = document["schema_version"]
     if not isinstance(version, str):

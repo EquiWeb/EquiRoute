@@ -70,7 +70,7 @@ the configuration file. The command writes `rows.jsonl` containing only
 canonical sanitized rows and `manifest.json` containing row counts,
 fingerprints, the configured size limit, and the redaction-rule count.
 `ingest` does not label, train on, send, or otherwise use those rows; they are
-only the possible local handoff for a future labeling step.
+only the possible local handoff for an explicit Stage-8 candidate-labeling step.
 
 On success, standard output is exactly the compact canonical manifest summary.
 It contains no source rows, projected values, or replacement text. Normal
@@ -86,6 +86,74 @@ Debug output intentionally never prints raw, projected, or redacted values,
 but its counts and fingerprints can still be sensitive provenance. Treat it
 as unsafe for routine shared logs.
 
+## Create review-only provider candidates
+
+Stage 8 can turn a reviewed Stage-7 sanitized handoff into **untrusted**
+candidate labels. It is explicit: it never runs as part of `ingest`, validation,
+training, or continuation, and it does not accept candidates or train on them.
+Install the optional official OpenRouter SDK only when this workflow is needed:
+
+```bash
+uv sync --extra labeling
+export OPENROUTER_API_KEY
+uv run equiroute label labeling.yaml
+```
+
+The key is read from the environment variable named by
+`credential_env_var`; never put a credential value in YAML. `label` requires
+an intact Stage-7 artifact (`rows.jsonl` and `manifest.json`) whose sanitized
+rows and manifest hash verify before any provider work. Its configuration uses
+only relative paths and non-secret provider settings:
+
+```yaml
+schema_version: "2"
+input:
+  directory: prepared/support
+routes: routes/parent.yaml
+output:
+  directory: candidates/support-review
+provider:
+  endpoint: https://openrouter.ai/api/v1
+  model: openai/gpt-4o-mini
+  credential_env_var: OPENROUTER_API_KEY
+policy_prompt: >-
+  Choose exactly one registered route and return JSON with name and arguments.
+concurrency: 2
+rate_limit_per_minute: 30
+max_retries: 2
+```
+
+The policy is sent as the system message. Each sanitized row is sent separately
+as JSON-quoted untrusted data with an instruction not to follow instructions
+inside that data. The command uses the configured bounded concurrency and
+per-minute rate limit; SDK retries are limited by `max_retries` (0–8).
+Refusals, timeouts, rate limits, malformed responses, and invalid route
+decisions become rejected candidates rather than examples.
+
+On success stdout is exactly a compact, canonical manifest summary. The new
+output directory contains `candidates.jsonl` and `manifest.json`; it records
+only candidate decisions or rejection reasons and provenance fingerprints,
+counts, hashes, provider model/endpoint, and policy/registry fingerprints.
+It does not retain input text, the policy text, provider response text, or
+credentials. Normal command output and errors never log secrets, policy text,
+sanitized input, or provider responses. Review candidates independently before
+any later workflow; Stage 9, if introduced, is the explicit acceptance and
+training boundary, not part of this command.
+
+For a deliberately live SDK check, create a dedicated configuration for one
+non-sensitive Stage-7 sanitized row and a new output directory, then run this
+manual-only command. It is excluded from CI:
+
+```bash
+uv sync --extra labeling
+export OPENROUTER_API_KEY
+uv run python scripts/openrouter_live_smoke.py labeling-live-smoke.yaml
+```
+
+The smoke script refuses to run when the credential environment variable named
+by its configuration is absent. It prints only the same safe canonical manifest
+summary; do not use ordinary or sensitive production rows for this live check.
+
 ## What to read next
 
 - [Schemas and migrations](docs/schemas.md): strict YAML/JSONL contracts, v1-to-v2 reading, and persistence rules.
@@ -96,4 +164,4 @@ as unsafe for routine shared logs.
 
 The sole supported base model is `google/functiongemma-270m-it` at revision `39eccb091651513a5dfb56892d3714c1b5b8276c`. EquiRoute fixes the native FunctionGemma template and uses LoRA on its `q_proj` and `v_proj` modules. It does not accept an alternative model, model revision, or user device override.
 
-EquiRoute emits a merged local Hugging Face model directory for deployment, but it does not run an endpoint, choose a production fallback, or implement a runtime proxy. It validates human-authored local data; it does not provide assisted labeling, provider integration, or credential management.
+EquiRoute emits a merged local Hugging Face model directory for deployment, but it does not run an endpoint, choose a production fallback, or implement a runtime proxy. Its optional Stage-8 integration creates review-only provider candidates from an explicitly selected sanitized handoff; it does not manage credentials, accept candidates, or train on them.

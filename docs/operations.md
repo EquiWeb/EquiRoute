@@ -25,6 +25,42 @@ uv run equiroute export ARTIFACT
 
 They require compatible local PyTorch/Transformers/PEFT/Accelerate installation and may obtain or load FunctionGemma files. Run them only where that is intended and where the data/artifact access is appropriate.
 
+## Optional Stage-8 labeling and live SDK smoke
+
+Candidate labeling is an explicit, manual provider workflow, not normal CI:
+
+```bash
+uv sync --extra labeling
+export OPENROUTER_API_KEY
+uv run equiroute label labeling.yaml
+```
+
+The labeling YAML names `OPENROUTER_API_KEY` through
+`provider.credential_env_var`; it never contains the credential value. Its
+input must be a verified Stage-7 sanitized handoff. The policy is sent as a
+system message, while each sanitized row is JSON-quoted as untrusted data with
+an instruction not to follow embedded instructions. Bound `concurrency`,
+per-minute rate limiting, and `max_retries` (0–8) constrain provider work.
+Provider results remain untrusted candidates: refusals, transport outcomes,
+malformed responses, and invalid decisions are rejected, never accepted or
+trained automatically.
+
+To verify a real OpenRouter SDK path, use a dedicated configuration containing
+one non-sensitive sanitized Stage-7 row and a new output directory:
+
+```bash
+uv sync --extra labeling
+export OPENROUTER_API_KEY
+uv run python scripts/openrouter_live_smoke.py labeling-live-smoke.yaml
+```
+
+This script is manually invoked and excluded from CI. It refuses to run if the
+environment variable named by the configuration is absent, and prints only a
+canonical, non-secret manifest summary. Do not place credentials, raw inputs,
+policy text, or provider responses in shell output, normal logs, or the
+configuration. Stage 9 is the future explicit review/acceptance boundary; this
+release has no candidate acceptance or training path.
+
 ## Device policy and diagnosis
 
 EquiRoute selects the best available device in fixed order: CUDA, then Apple MPS, then CPU. There is no configuration or CLI device override. The selected capability is written into the training manifest and must match when resuming.
@@ -68,9 +104,11 @@ completion, and parse-detail values in semantic-evaluation reports, so those
 values are not retained there. It is not a general privacy mechanism, a
 deletion operation, a guarantee that training data cannot be memorized, or a
 promise of compliance with any law, policy, or organization requirement.
-EquiRoute has no hosted labeling provider, API credential store, telemetry
-pipeline, or server in this release; users remain responsible for the data
-they place in local files and for downstream controls.
+EquiRoute has no hosted labeling service, API credential store, telemetry
+pipeline, or server. Its optional client can send an explicitly selected
+Stage-7 sanitized handoff to the configured provider; users remain responsible
+for that disclosure, their environment credentials, local files, and
+downstream controls.
 
 ## FunctionGemma and Gemma terms
 

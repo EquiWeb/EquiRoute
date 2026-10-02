@@ -95,11 +95,11 @@ def _matches_primitive(value: Any, expected_type: str) -> bool:
     if expected_type == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
     if expected_type == "number":
-        return (
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and math.isfinite(value)
-        )
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return True
+        return isinstance(value, float) and math.isfinite(value)
     return isinstance(value, bool)
 
 

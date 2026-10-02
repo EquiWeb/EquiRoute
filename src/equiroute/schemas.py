@@ -13,6 +13,9 @@ from .migrations import (
     migrate_dataset_manifest,
     migrate_dataset_report,
     migrate_evaluation_report,
+    migrate_label_candidate,
+    migrate_labeling_config,
+    migrate_labeling_manifest,
     migrate_raw_ingestion_config,
     migrate_raw_ingestion_manifest,
     migrate_training_config,
@@ -300,6 +303,209 @@ class RawIngestionManifest(StrictModel):
     @classmethod
     def migrate_schema_version(cls, document: Any) -> Any:
         return migrate_raw_ingestion_manifest(document)
+
+
+class LabelingInput(StrictModel):
+    """Directory containing a verified Stage-7 sanitized handoff."""
+
+    directory: str = Field(min_length=1)
+
+
+class LabelingOutput(StrictModel):
+    """Directory reserved for a future candidate artifact."""
+
+    directory: str = Field(min_length=1)
+
+
+def _validate_provider_endpoint(value: str) -> str:
+    """Require a non-secret HTTP endpoint suitable for provider provenance."""
+
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "must be an http(s) URL without credentials, query, or fragment"
+        )
+    return value
+
+
+class OpenRouterProvider(StrictModel):
+    """Non-secret OpenRouter-compatible request settings."""
+
+    endpoint: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    credential_env_var: str = Field(min_length=1)
+
+    @field_validator("endpoint")
+    @classmethod
+    def validate_endpoint(cls, value: str) -> str:
+        return _validate_provider_endpoint(value)
+
+    @field_validator("credential_env_var")
+    @classmethod
+    def validate_credential_env_var(cls, value: str) -> str:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value) is None:
+            raise ValueError("must be a valid environment-variable name")
+        return value
+
+
+class LabelingConfig(StrictModel):
+    """Strict v2-only, non-secret configuration for candidate labeling."""
+
+    schema_version: Literal["2"]
+    input: LabelingInput
+    routes: str = Field(min_length=1)
+    output: LabelingOutput
+    provider: OpenRouterProvider
+    policy_prompt: str = Field(min_length=1)
+    concurrency: int = Field(ge=1, le=64)
+    rate_limit_per_minute: int = Field(ge=1, le=10_000)
+    max_retries: int = Field(ge=0, le=8)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_labeling_config(document)
+
+
+CandidateRequestStatus = Literal[
+    "succeeded",
+    "refused",
+    "timed_out",
+    "rate_limited",
+    "transport_failed",
+]
+CandidateRejectionReason = Literal[
+    "refusal",
+    "timeout",
+    "rate_limited",
+    "transport_failure",
+    "malformed_response",
+    "invalid_decision",
+]
+
+
+class LabelCandidateProvenance(StrictModel):
+    """Non-secret provenance attached to every untrusted provider candidate."""
+
+    source_id: str = Field(min_length=1)
+    source_line: int = Field(ge=1)
+    policy_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    registry_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provider_model: str = Field(min_length=1)
+    provider_endpoint: str = Field(min_length=1)
+    request_status: CandidateRequestStatus
+    response_timestamp: str = Field(
+        pattern=(
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+            r"(?:\.\d{1,6})?Z$"
+        )
+    )
+    attempts: int = Field(ge=1, le=9)
+
+    @field_validator("provider_endpoint")
+    @classmethod
+    def validate_provider_endpoint(cls, value: str) -> str:
+        return _validate_provider_endpoint(value)
+
+    @field_validator("response_timestamp")
+    @classmethod
+    def validate_response_timestamp(cls, value: str) -> str:
+        from datetime import datetime
+
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("must be a valid UTC RFC 3339 timestamp") from error
+        return value
+
+
+class LabelCandidate(StrictModel):
+    """One provider result, deliberately distinct from a training Example."""
+
+    schema_version: Literal["2"]
+    provenance: LabelCandidateProvenance
+    status: Literal["labeled", "rejected"]
+    decision: Decision | None = None
+    rejection_reason: CandidateRejectionReason | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_label_candidate(document)
+
+    @model_validator(mode="after")
+    def validate_result(self) -> LabelCandidate:
+        if self.status == "labeled":
+            if self.decision is None or self.rejection_reason is not None:
+                raise ValueError(
+                    "labeled candidates require a decision and no rejection_reason"
+                )
+            if self.provenance.request_status != "succeeded":
+                raise ValueError("labeled candidates require a succeeded request")
+        elif self.decision is not None or self.rejection_reason is None:
+            raise ValueError(
+                "rejected candidates require a rejection_reason and no decision"
+            )
+        else:
+            expected_rejection = {
+                "refused": "refusal",
+                "timed_out": "timeout",
+                "rate_limited": "rate_limited",
+                "transport_failed": "transport_failure",
+            }.get(self.provenance.request_status)
+            if expected_rejection is not None and (
+                self.rejection_reason != expected_rejection
+            ):
+                raise ValueError(
+                    "rejection_reason must match the terminal request_status"
+                )
+            if self.provenance.request_status == "succeeded" and (
+                self.rejection_reason not in {"malformed_response", "invalid_decision"}
+            ):
+                raise ValueError(
+                    "succeeded rejected candidates require malformed_response or "
+                    "invalid_decision"
+                )
+        return self
+
+
+class LabelingArtifact(StrictModel):
+    """Count and SHA-256 for a sanitized or candidate JSONL file."""
+
+    rows: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class LabelingManifest(StrictModel):
+    """Strict Stage-8 artifact provenance without input text or credentials."""
+
+    schema_version: Literal["2"]
+    input: LabelingArtifact
+    input_manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    output: LabelingArtifact
+    policy_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    registry_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provider_model: str = Field(min_length=1)
+    provider_endpoint: str = Field(min_length=1)
+
+    @field_validator("provider_endpoint")
+    @classmethod
+    def validate_provider_endpoint(cls, value: str) -> str:
+        return _validate_provider_endpoint(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_labeling_manifest(document)
 
 
 class ModelConfig(StrictModel):

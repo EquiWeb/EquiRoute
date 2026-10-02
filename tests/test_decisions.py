@@ -100,3 +100,17 @@ def test_rejects_wrong_primitive_argument_type(registry, name, value, expected_d
 
     assert raised.value.category == "invalid_arguments"
     assert raised.value.detail == expected_detail
+
+
+def test_accepts_arbitrarily_large_integer_as_number(registry):
+    decision = Decision(
+        name="typed_route",
+        arguments={
+            "text": "hello",
+            "count": 3,
+            "score": 10**400,
+            "enabled": True,
+        },
+    )
+
+    assert validate_decision(decision, registry) is None
