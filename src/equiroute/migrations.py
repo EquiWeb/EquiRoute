@@ -28,6 +28,20 @@ def migrate_training_config(document: Any) -> Any:
     )
 
 
+def migrate_raw_ingestion_config(document: Any) -> Any:
+    """Require the only supported raw-ingestion configuration schema."""
+
+    return _require_current_version(
+        document, document_name="raw ingestion configuration"
+    )
+
+
+def migrate_raw_ingestion_manifest(document: Any) -> Any:
+    """Require the only supported raw-ingestion manifest schema."""
+
+    return _require_current_version(document, document_name="raw ingestion manifest")
+
+
 def migrate_dataset_report(document: Any) -> Any:
     """Migrate a versioned dataset report to the current raw form."""
 
@@ -134,3 +148,28 @@ def _migrate_version(
         f"Unsupported {document_name} schema_version {version!r}; this EquiRoute "
         f"version supports {_SUPPORTED_VERSIONS}."
     )
+
+
+def _require_current_version(document: Any, *, document_name: str) -> Any:
+    """Return a raw v2 mapping only when it explicitly declares schema v2."""
+
+    if not isinstance(document, Mapping):
+        return document
+
+    if "schema_version" not in document:
+        raise SchemaMigrationError(
+            f"{document_name} requires schema_version {CURRENT_SCHEMA_VERSION!r}; "
+            "there is no legacy raw-input schema."
+        )
+    version = document["schema_version"]
+    if not isinstance(version, str):
+        raise SchemaMigrationError(
+            f"{document_name} schema_version must be a string; use "
+            f"{CURRENT_SCHEMA_VERSION!r}."
+        )
+    if version != CURRENT_SCHEMA_VERSION:
+        raise SchemaMigrationError(
+            f"Unsupported {document_name} schema_version {version!r}; this "
+            f"EquiRoute version requires {CURRENT_SCHEMA_VERSION!r}."
+        )
+    return document

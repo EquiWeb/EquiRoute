@@ -39,9 +39,38 @@ If the model extra is missing, install it. If a manual model command fails befor
 
 ## Data and privacy limits
 
-Route descriptions, examples, copied configuration/registry provenance, semantic reports, checkpoints, adapters, and merged model weights can contain information derived from your routing task. Treat local paths, backups, logs, artifact directories, and any downstream deployment as part of your data-handling boundary.
+Route descriptions, examples, copied configuration/registry provenance,
+semantic reports, checkpoints, adapters, and merged model weights can contain
+information derived from your routing task. Treat local paths, backups, logs,
+artifact directories, and any downstream deployment as part of your
+data-handling boundary.
 
-`evaluation.redact: true` writes `null` for representative input, raw completion, and parse-detail values in semantic-evaluation reports, so those values are not retained there. It is not a general privacy mechanism, a deletion operation, a guarantee that training data cannot be memorized, or a promise of compliance with any law, policy, or organization requirement. EquiRoute has no hosted labeling provider, API credential store, telemetry pipeline, or server in this release; users remain responsible for the data they place in local files and for downstream controls.
+Raw ingestion is local-only. `equiroute ingest` reads a configured local JSONL
+source and writes only its projected, redacted canonical rows plus a manifest;
+it has no provider, request, credential, telemetry, training, or automatic
+labeling integration. Projection and redaction are controls for the resulting
+artifact, not a deletion operation: the original source file, backups, shell
+history, and filesystem access remain the operator's responsibility. Review
+the artifact before any later use, and keep the output directory under the
+same access and retention controls as the source.
+
+Successful normal ingest output is a manifest summary only. Standard errors
+for expected failures contain safe source location, line, field path, reason,
+and correction rather than source or projected values. `--debug` is explicit
+and stderr-only; it adds the configuration location, row counts, and SHA-256
+provenance fingerprints without printing raw, projected, replacement, or
+sanitized values. Those identifiers can nevertheless reveal or correlate
+local datasets, so debug output is unsafe for routine shared logs and must
+remain within the local data boundary.
+
+`evaluation.redact: true` writes `null` for representative input, raw
+completion, and parse-detail values in semantic-evaluation reports, so those
+values are not retained there. It is not a general privacy mechanism, a
+deletion operation, a guarantee that training data cannot be memorized, or a
+promise of compliance with any law, policy, or organization requirement.
+EquiRoute has no hosted labeling provider, API credential store, telemetry
+pipeline, or server in this release; users remain responsible for the data
+they place in local files and for downstream controls.
 
 ## FunctionGemma and Gemma terms
 

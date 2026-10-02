@@ -15,10 +15,16 @@ from .dataset import (
     validate_partitions,
     write_split,
 )
-from .evaluation import EvaluationError, evaluate_artifact
-from .errors import EquiRouteError
+from .errors import (
+    EquiRouteError,
+    RawIngestionConfigError,
+    RawInputLoadError,
+    SourceError,
+)
 from .io import load_route_registry, load_training_config
+from .evaluation import EvaluationError, evaluate_artifact
 from .init import InitError, create_starter_project
+from .raw_input import ingest_raw_inputs
 from .training import TrainingError, continue_router, export_router, train_router
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -83,6 +89,75 @@ def _canonical_json(value: object) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _safe_ingestion_error(error: SourceError) -> str:
+    """Render structured ingestion failures without exception payloads."""
+
+    reason = error.message
+    for unsafe_prefix, safe_reason in (
+        ("could not decode UTF-8:", "could not decode UTF-8"),
+        ("malformed JSON:", "malformed JSON"),
+        ("could not read raw inputs:", "could not read raw inputs"),
+        (
+            "could not read raw ingestion configuration:",
+            "could not read raw ingestion configuration",
+        ),
+        ("malformed YAML:", "malformed YAML"),
+    ):
+        if reason.startswith(unsafe_prefix):
+            reason = safe_reason
+            break
+
+    location = error.source
+    if error.line is not None:
+        location += f":{error.line}"
+    if error.path:
+        location += f": {error.path}"
+    rendered = f"{location}: {reason}"
+    if error.correction:
+        rendered += f"; correction: {error.correction}"
+    return rendered
+
+
+@app.command()
+def ingest(
+    config: Annotated[Path, typer.Argument()],
+    debug: Annotated[
+        bool,
+        typer.Option(
+            help="Write local provenance counts and hashes to standard error."
+        ),
+    ] = False,
+) -> None:
+    """Project and redact local raw JSONL into canonical unlabeled rows."""
+
+    try:
+        manifest = ingest_raw_inputs(config)
+    except (RawIngestionConfigError, RawInputLoadError) as error:
+        typer.echo(f"Ingestion failed: {_safe_ingestion_error(error)}", err=True)
+        raise typer.Exit(code=1) from error
+    except OSError as error:
+        typer.echo(
+            "Ingestion failed: "
+            f"{config}: output.directory: could not write canonical output; "
+            "correction: ensure the output parent exists and is writable",
+            err=True,
+        )
+        raise typer.Exit(code=1) from error
+
+    typer.echo(_canonical_json(manifest.model_dump(mode="json")))
+    if debug:
+        typer.echo(
+            f"Ingestion debug: config={config} "
+            f"source_rows={manifest.source.rows} "
+            f"source_sha256={manifest.source.sha256} "
+            f"output_rows={manifest.output.rows} "
+            f"output_sha256={manifest.output.sha256} "
+            f"redaction_count={manifest.redaction_count} "
+            f"max_input_bytes={manifest.max_input_bytes}",
+            err=True,
+        )
 
 
 def _unavailable(stage: str) -> None:

@@ -53,6 +53,39 @@ uv run equiroute export artifacts/add-shipping-router
 
 Testing `uv sync` inside a starter from an unreleased source checkout requires an installable released package or a built wheel. The generated project deliberately contains no source-path dependency fallback. These model-loading commands can load the pinned base model or a local artifact. Rebuilding a missing `model/` export is a manual workflow, not part of the ordinary test or CI workload. No normal validation command, unit test, or fixture smoke test downloads or loads model weights.
 
+## Prepare raw inputs locally
+
+`ingest` is an optional, model-free preparation step for unlabeled JSONL. It
+projects only configured fields, applies ordered redactions before writing, and
+creates a new canonical artifact directory:
+
+```bash
+uv run equiroute ingest raw-ingestion.yaml
+```
+
+The configuration names a local source, a new output directory, JSON Pointer
+projections for `id`, `input`, and optional metadata, redaction rules, and a
+post-redaction input-size limit. Its source and output paths are relative to
+the configuration file. The command writes `rows.jsonl` containing only
+canonical sanitized rows and `manifest.json` containing row counts,
+fingerprints, the configured size limit, and the redaction-rule count.
+`ingest` does not label, train on, send, or otherwise use those rows; they are
+only the possible local handoff for a future labeling step.
+
+On success, standard output is exactly the compact canonical manifest summary.
+It contains no source rows, projected values, or replacement text. Normal
+errors identify only a source path, optional line and field path, reason, and
+correction. For local provenance diagnosis, `--debug` adds the configuration
+location, counts, and SHA-256 fingerprints to standard error without changing
+standard output:
+```bash
+uv run equiroute ingest raw-ingestion.yaml --debug
+```
+
+Debug output intentionally never prints raw, projected, or redacted values,
+but its counts and fingerprints can still be sensitive provenance. Treat it
+as unsafe for routine shared logs.
+
 ## What to read next
 
 - [Schemas and migrations](docs/schemas.md): strict YAML/JSONL contracts, v1-to-v2 reading, and persistence rules.

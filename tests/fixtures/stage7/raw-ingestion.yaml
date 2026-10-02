@@ -1,0 +1,18 @@
+schema_version: "2"
+source: raw-inputs.jsonl
+output:
+  directory: sanitized
+projection:
+  id: /ticket/id
+  input: /ticket/text
+  metadata:
+    channel: /ticket/channel
+redactions:
+  - target: /input
+    pattern: '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+    replacement: "[email]"
+  - target: /input
+    pattern: '\b(?:\d[ -]?){13,19}\b'
+    replacement: "[card]"
+limits:
+  max_input_bytes: 512

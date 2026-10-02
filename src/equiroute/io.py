@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
@@ -12,10 +12,29 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from .decisions import DecisionValidationError, _argument_correction, validate_decision
-from .errors import ConfigLoadError, ExampleLoadError, RegistryLoadError, SourceError
-from .migrations import SchemaMigrationError, migrate_training_config
+from .errors import (
+    ConfigLoadError,
+    ExampleLoadError,
+    RawIngestionConfigError,
+    RawInputLoadError,
+    RegistryLoadError,
+    SourceError,
+)
+from .migrations import (
+    SchemaMigrationError,
+    migrate_raw_ingestion_config,
+    migrate_training_config,
+)
 
-from .schemas import Decision, Example, RouteRegistry, TrainingConfig
+from .schemas import (
+    Decision,
+    Example,
+    RawIngestionConfig,
+    RawInputRow,
+    RouteRegistry,
+    TrainingConfig,
+    _json_pointer_tokens,
+)
 
 _Model = TypeVar("_Model", bound=BaseModel)
 
@@ -27,6 +46,83 @@ class LoadedExample:
     example: Example
     source: Path
     line: int
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedRawInput:
+    """A projected, redacted raw input with its source location."""
+
+    raw_input: RawInputRow
+    source: Path
+    line: int
+
+    @property
+    def row(self) -> RawInputRow:
+        """Return the canonical row under its concise pipeline name."""
+
+        return self.raw_input
+
+
+def iter_raw_inputs(
+    config_or_path: RawIngestionConfig | str | Path,
+    config: RawIngestionConfig | None = None,
+    *,
+    content_hasher: Any | None = None,
+) -> Iterator[LoadedRawInput]:
+    """Stream configured raw JSONL as canonical, redacted rows.
+
+    Pass a config alone to use its configured source.  The explicit
+    ``path, config`` form is available to a future orchestrator that resolves
+    a relative config source before streaming.
+    """
+
+    if isinstance(config_or_path, RawIngestionConfig):
+        if config is not None:
+            raise TypeError("iter_raw_inputs accepts either config or path plus config")
+        ingestion_config = config_or_path
+        source = Path(ingestion_config.source)
+    else:
+        if config is None:
+            raise TypeError("iter_raw_inputs requires a RawIngestionConfig")
+        ingestion_config = config
+        source = Path(config_or_path)
+
+    ids: dict[str, int] = {}
+    try:
+        with source.open("rb") as inputs_file:
+            for line_number, raw_line in enumerate(inputs_file, start=1):
+                if content_hasher is not None:
+                    content_hasher.update(raw_line)
+                document = _load_raw_json_object(source, line_number, raw_line)
+                projected = _project_raw_input(
+                    document, ingestion_config, source, line_number
+                )
+                _apply_raw_redactions(projected, ingestion_config, source, line_number)
+                _validate_projected_raw_input_utf8(projected, source, line_number)
+                raw_input = _validate_raw_input_row(projected, source, line_number)
+                _validate_raw_input_size(
+                    raw_input, ingestion_config, source, line_number
+                )
+
+                first_line = ids.get(raw_input.id)
+                if first_line is not None:
+                    raise RawInputLoadError(
+                        f"duplicate raw input id; first declared on line {first_line}",
+                        source=source,
+                        line=line_number,
+                        path="id",
+                        correction="assign a unique id",
+                    )
+                ids[raw_input.id] = line_number
+                yield LoadedRawInput(
+                    raw_input=raw_input, source=source, line=line_number
+                )
+    except OSError as error:
+        raise RawInputLoadError(
+            f"could not read raw inputs: {error}",
+            source=source,
+            correction="ensure the file exists and is valid UTF-8 JSONL",
+        ) from error
 
 
 def iter_examples(
@@ -113,6 +209,17 @@ def load_training_config(path: str | Path) -> TrainingConfig:
     )
 
 
+def load_raw_ingestion_config(path: str | Path) -> RawIngestionConfig:
+    """Load one strict v2-only raw-input ingestion configuration."""
+
+    source = Path(path)
+    document = _load_yaml_mapping(
+        source, RawIngestionConfigError, "raw ingestion configuration"
+    )
+    document = _migrate_raw_ingestion_config(document, source)
+    return _validate_raw_ingestion_config(document, source)
+
+
 def load_examples(path: str | Path, registry: RouteRegistry) -> list[Example]:
     """Load every validated JSONL example into a list for existing callers."""
 
@@ -133,6 +240,248 @@ def load_examples(path: str | Path, registry: RouteRegistry) -> list[Example]:
             ids[example.id] = loaded.line
         examples.append(example)
     return examples
+
+
+def _load_raw_json_object(
+    source: Path, line_number: int, raw_line: bytes
+) -> dict[str, Any]:
+    try:
+        line = raw_line.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RawInputLoadError(
+            f"could not decode UTF-8: {error}",
+            source=source,
+            line=line_number,
+            path="$",
+            correction="replace this line with valid UTF-8 JSON",
+        ) from error
+    if not line.strip():
+        raise RawInputLoadError(
+            "expected a JSON object, got a blank line",
+            source=source,
+            line=line_number,
+            path="$",
+            correction="remove blank lines; each line must be a JSON object",
+        )
+    try:
+        document = json.loads(line, parse_constant=_reject_nonstandard_json_constant)
+    except (json.JSONDecodeError, ValueError) as error:
+        raise RawInputLoadError(
+            f"malformed JSON: {error}",
+            source=source,
+            line=line_number,
+            path="$",
+            correction="replace this line with a valid JSON object",
+        ) from error
+    if not isinstance(document, dict):
+        raise RawInputLoadError(
+            "expected a JSON object",
+            source=source,
+            line=line_number,
+            path="$",
+            correction="replace this line with a JSON object",
+        )
+    return document
+
+
+def _project_raw_input(
+    document: dict[str, Any],
+    config: RawIngestionConfig,
+    source: Path,
+    line_number: int,
+) -> dict[str, Any]:
+    metadata = {
+        name: _resolve_raw_pointer(
+            document,
+            pointer,
+            source,
+            line_number,
+            path=f"projection.metadata.{name}",
+        )
+        for name, pointer in config.projection.metadata.items()
+    }
+    return {
+        "id": _resolve_raw_pointer(
+            document,
+            config.projection.id,
+            source,
+            line_number,
+            path="projection.id",
+        ),
+        "input": _resolve_raw_pointer(
+            document,
+            config.projection.input,
+            source,
+            line_number,
+            path="projection.input",
+        ),
+        "metadata": {
+            "_equiroute": {"source_line": line_number},
+            **metadata,
+        },
+    }
+
+
+def _resolve_raw_pointer(
+    document: dict[str, Any],
+    pointer: str,
+    source: Path,
+    line_number: int,
+    *,
+    path: str,
+) -> Any:
+    value: Any = document
+    for token in _json_pointer_tokens(pointer):
+        if not isinstance(value, Mapping):
+            raise RawInputLoadError(
+                "JSON Pointer traversal requires mappings and cannot traverse arrays",
+                source=source,
+                line=line_number,
+                path=path,
+                correction="change the projection to traverse object fields only",
+            )
+        if token not in value:
+            raise RawInputLoadError(
+                "JSON Pointer does not resolve in this source row",
+                source=source,
+                line=line_number,
+                path=path,
+                correction="change the projection or provide the required object field",
+            )
+        value = value[token]
+    return value
+
+
+def _apply_raw_redactions(
+    projected: dict[str, Any],
+    config: RawIngestionConfig,
+    source: Path,
+    line_number: int,
+) -> None:
+    metadata = projected["metadata"]
+    assert isinstance(metadata, dict)
+    for rule in config.redactions:
+        metadata_name = rule.metadata_name
+        if metadata_name is None:
+            target = projected
+            field = "input"
+            path = "input"
+        else:
+            target = metadata
+            field = metadata_name
+            path = f"metadata.{metadata_name}"
+        value = target[field]
+        if not isinstance(value, str):
+            raise RawInputLoadError(
+                "redaction target must resolve to a string",
+                source=source,
+                line=line_number,
+                path=path,
+                correction="change the projection or target a string metadata field",
+            )
+        target[field] = rule.apply(value)
+
+
+def _validate_raw_input_row(
+    projected: dict[str, Any], source: Path, line_number: int
+) -> RawInputRow:
+    try:
+        return RawInputRow.model_validate(projected)
+    except ValidationError as error:
+        issues = error.errors()
+        details = "; ".join(
+            f"{_format_location(issue['loc'])}: {issue['msg']}" for issue in issues
+        )
+        raise RawInputLoadError(
+            f"invalid raw input: {details}",
+            source=source,
+            line=line_number,
+            path=_format_location(issues[0]["loc"]),
+            correction=_validation_correction(error),
+        ) from error
+
+
+def _validate_projected_raw_input_utf8(
+    projected: dict[str, Any], source: Path, line_number: int
+) -> None:
+    """Reject canonical values that JSON can render but UTF-8 cannot serialize."""
+
+    for field in ("id", "input"):
+        value = projected[field]
+        if isinstance(value, str):
+            _validate_utf8_string(value, source, line_number, path=field)
+    _validate_metadata_utf8(projected["metadata"], source, line_number, path="metadata")
+
+
+def _validate_metadata_utf8(
+    value: Any, source: Path, line_number: int, *, path: str
+) -> None:
+    """Validate recursive metadata strings without exposing source values."""
+
+    if isinstance(value, str):
+        _validate_utf8_string(value, source, line_number, path=path)
+    elif isinstance(value, Mapping):
+        for key, nested_value in value.items():
+            if not isinstance(key, str):
+                continue
+            _validate_utf8_string(key, source, line_number, path=path)
+            _validate_metadata_utf8(
+                nested_value,
+                source,
+                line_number,
+                path=f"{path}.{key}",
+            )
+    elif isinstance(value, list):
+        for index, nested_value in enumerate(value):
+            _validate_metadata_utf8(
+                nested_value,
+                source,
+                line_number,
+                path=f"{path}[{index}]",
+            )
+
+
+def _validate_utf8_string(
+    value: str, source: Path, line_number: int, *, path: str
+) -> None:
+    """Turn Unicode encoding failures into source-aware, redacted input errors."""
+
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise RawInputLoadError(
+            "canonical value cannot be encoded as UTF-8",
+            source=source,
+            line=line_number,
+            path=path,
+            correction="replace invalid Unicode with UTF-8 text",
+        ) from error
+
+
+def _validate_raw_input_size(
+    raw_input: RawInputRow,
+    config: RawIngestionConfig,
+    source: Path,
+    line_number: int,
+) -> None:
+    try:
+        input_size = len(raw_input.input.encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise RawInputLoadError(
+            "input cannot be encoded as UTF-8",
+            source=source,
+            line=line_number,
+            path="input",
+            correction="replace invalid Unicode with UTF-8 text",
+        ) from error
+    if input_size > config.limits.max_input_bytes:
+        raise RawInputLoadError(
+            f"input exceeds the {config.limits.max_input_bytes}-byte limit after redaction",
+            source=source,
+            line=line_number,
+            path="input",
+            correction="shorten the input or add a redaction rule",
+        )
 
 
 def _load_yaml_mapping(
@@ -179,6 +528,40 @@ def _migrate_training_config(document: dict[str, Any], source: Path) -> dict[str
         ) from error
     assert isinstance(migrated, dict)
     return migrated
+
+
+def _migrate_raw_ingestion_config(
+    document: dict[str, Any], source: Path
+) -> dict[str, Any]:
+    try:
+        migrated = migrate_raw_ingestion_config(document)
+    except SchemaMigrationError as error:
+        raise RawIngestionConfigError(
+            str(error),
+            source=source,
+            path="schema_version",
+            correction='set schema_version to "2"',
+        ) from error
+    assert isinstance(migrated, dict)
+    return migrated
+
+
+def _validate_raw_ingestion_config(
+    document: dict[str, Any], source: Path
+) -> RawIngestionConfig:
+    try:
+        return RawIngestionConfig.model_validate(document)
+    except ValidationError as error:
+        issues = error.errors()
+        details = "; ".join(
+            f"{_format_location(issue['loc'])}: {issue['msg']}" for issue in issues
+        )
+        raise RawIngestionConfigError(
+            f"invalid raw ingestion configuration: {details}",
+            source=source,
+            path=_format_location(issues[0]["loc"]),
+            correction=_validation_correction(error),
+        ) from error
 
 
 def _validate_model(

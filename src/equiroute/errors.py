@@ -48,3 +48,11 @@ class ConfigLoadError(SourceError):
 
 class ExampleLoadError(SourceError):
     """A JSONL example could not be read or validated."""
+
+
+class RawIngestionConfigError(SourceError):
+    """A raw-input ingestion configuration could not be read or validated."""
+
+
+class RawInputLoadError(SourceError):
+    """A raw JSONL input row could not be read, projected, or validated."""

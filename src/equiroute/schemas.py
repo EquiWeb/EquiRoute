@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Literal
 
 from .model import FUNCTIONGEMMA_LORA_DROPOUT, FUNCTIONGEMMA_LORA_TARGET_MODULES
@@ -12,12 +13,23 @@ from .migrations import (
     migrate_dataset_manifest,
     migrate_dataset_report,
     migrate_evaluation_report,
+    migrate_raw_ingestion_config,
+    migrate_raw_ingestion_manifest,
     migrate_training_config,
     migrate_training_evaluation,
     migrate_training_manifest,
 )
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 
 class StrictModel(BaseModel):
@@ -100,6 +112,194 @@ class Example(StrictModel):
     input: str = Field(min_length=1)
     route: Decision
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def _json_pointer_tokens(pointer: str) -> tuple[str, ...]:
+    """Parse one RFC 6901 JSON Pointer without resolving it."""
+
+    if pointer == "":
+        return ()
+    if not pointer.startswith("/"):
+        raise ValueError("must be an RFC 6901 JSON Pointer")
+
+    tokens: list[str] = []
+    for token in pointer[1:].split("/"):
+        decoded: list[str] = []
+        index = 0
+        while index < len(token):
+            character = token[index]
+            if character != "~":
+                decoded.append(character)
+                index += 1
+                continue
+            if index + 1 == len(token) or token[index + 1] not in {"0", "1"}:
+                raise ValueError("must use only ~0 and ~1 JSON Pointer escapes")
+            decoded.append("~" if token[index + 1] == "0" else "/")
+            index += 2
+        tokens.append("".join(decoded))
+    return tuple(tokens)
+
+
+class RawIngestionOutput(StrictModel):
+    """The future output location for an otherwise standalone raw ingestion."""
+
+    directory: str = Field(min_length=1)
+
+
+class RawInputProjection(StrictModel):
+    """Opt-in JSON Pointer projection from one source mapping."""
+
+    id: str
+    input: str
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("id", "input")
+    @classmethod
+    def validate_required_pointer(cls, value: str) -> str:
+        _json_pointer_tokens(value)
+        return value
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata_pointers(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(not name for name in value):
+            raise ValueError("metadata names must not be empty")
+        if "_equiroute" in value:
+            raise ValueError("metadata name '_equiroute' is reserved for provenance")
+        for pointer in value.values():
+            _json_pointer_tokens(pointer)
+        return value
+
+
+class RawRedactionRule(StrictModel):
+    """One ordered regex replacement over a projected canonical value."""
+
+    target: str = Field(
+        validation_alias=AliasChoices("target", "path"),
+        serialization_alias="target",
+    )
+    pattern: str
+    replacement: str = ""
+    _compiled_pattern: re.Pattern[str] = PrivateAttr()
+
+    @field_validator("target")
+    @classmethod
+    def validate_target(cls, value: str) -> str:
+        tokens = _json_pointer_tokens(value)
+        if tokens == ("input",):
+            return value
+        if len(tokens) == 2 and tokens[0] == "metadata" and tokens[1]:
+            return value
+        raise ValueError(
+            'must target "/input" or one "/metadata/<metadata name>" value'
+        )
+
+    @field_validator("pattern")
+    @classmethod
+    def validate_pattern(cls, value: str) -> str:
+        try:
+            re.compile(value)
+        except re.error as error:
+            raise ValueError("must be a valid regular expression") from error
+        return value
+
+    def model_post_init(self, __context: Any) -> None:
+        self._compiled_pattern = re.compile(self.pattern)
+
+    def apply(self, value: str) -> str:
+        """Apply the already validated regex without recompiling it per row."""
+
+        return self._compiled_pattern.sub(self.replacement, value)
+
+    @property
+    def metadata_name(self) -> str | None:
+        tokens = _json_pointer_tokens(self.target)
+        return tokens[1] if len(tokens) == 2 else None
+
+
+class RawInputLimits(StrictModel):
+    """Bounded input size after redaction and before any external use."""
+
+    max_input_bytes: int = Field(ge=1)
+
+
+class RawIngestionConfig(StrictModel):
+    """Strict v2-only configuration for projecting unlabeled raw JSONL."""
+
+    schema_version: Literal["2"]
+    source: str = Field(min_length=1)
+    output: RawIngestionOutput
+    projection: RawInputProjection
+    redactions: list[RawRedactionRule] = Field(default_factory=list)
+    limits: RawInputLimits
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_raw_ingestion_config(document)
+
+    @model_validator(mode="after")
+    def validate_redaction_targets(self) -> RawIngestionConfig:
+        metadata_names = set(self.projection.metadata)
+        for rule in self.redactions:
+            metadata_name = rule.metadata_name
+            if metadata_name is not None and metadata_name not in metadata_names:
+                raise ValueError(
+                    "redaction targets must name a projected metadata field"
+                )
+        return self
+
+
+class RawInputProvenance(StrictModel):
+    """Source location retained inside one canonical raw row."""
+
+    source_line: int = Field(ge=1)
+
+
+class RawInputRow(StrictModel):
+    """Canonical unlabeled row produced only after projection and redaction."""
+
+    id: str = Field(min_length=1)
+    input: str = Field(min_length=1)
+    metadata: dict[str, Any]
+
+    @model_validator(mode="after")
+    def validate_provenance(self) -> RawInputRow:
+        if any(not name for name in self.metadata):
+            raise ValueError("metadata names must not be empty")
+        provenance = self.metadata.get("_equiroute")
+        if provenance is None:
+            raise ValueError("metadata must include reserved '_equiroute' provenance")
+        try:
+            RawInputProvenance.model_validate(provenance)
+        except ValidationError as error:
+            raise ValueError(
+                "metadata._equiroute must contain only a positive source_line"
+            ) from error
+        return self
+
+
+class RawIngestionArtifact(StrictModel):
+    """Count and SHA-256 for one side of a raw-ingestion transformation."""
+
+    rows: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class RawIngestionManifest(StrictModel):
+    """Versioned raw-ingestion provenance without source-row content."""
+
+    schema_version: Literal["2"]
+    source: RawIngestionArtifact
+    output: RawIngestionArtifact
+    config_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    max_input_bytes: int = Field(ge=1)
+    redaction_count: int = Field(ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_raw_ingestion_manifest(document)
 
 
 class ModelConfig(StrictModel):

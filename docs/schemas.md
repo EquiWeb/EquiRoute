@@ -75,6 +75,68 @@ Each JSONL record is one example:
 
 `input` is non-empty. `id` and `metadata` are optional at the basic document level, but partition validation requires stable IDs and rejects duplicate normalized inputs across the train, validation, and test partitions. `validate` checks the registry and all declared partitions before training. `split` validates one source and emits a deterministic, route-stratified 80/10/10 split using the supplied seed.
 
+## Raw-ingestion configuration and artifact
+
+`equiroute ingest CONFIG` accepts only a strict v2 YAML configuration and
+creates an unlabeled, sanitized artifact locally. It is independent of the
+training configuration and is not a training input.
+
+```yaml
+schema_version: "2"
+source: exports/support.jsonl
+output:
+  directory: prepared/support
+projection:
+  id: /ticket/id
+  input: /ticket/message
+  metadata:
+    channel: /ticket/channel
+redactions:
+  - target: /input
+    pattern: '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+    replacement: "[email]"
+limits:
+  max_input_bytes: 4096
+```
+
+`source` and `output.directory` resolve relative to `CONFIG`. The source is
+one JSON object per non-blank JSONL line. Projection values are RFC 6901 JSON
+Pointers: they must resolve through object mappings (not arrays) in every
+source row. `id` and `input` are required; `metadata` is optional. The
+canonical output appends `metadata._equiroute.source_line`, a one-based source
+line number, for local provenance.
+
+Each ordered redaction targets `/input` or one projected
+`/metadata/<name>` string. Redactions run after projection and before row
+validation, hashing the sanitized output, or writing anything. The resulting
+`input` must be non-empty UTF-8 and no larger than `max_input_bytes` after
+redaction. A source-row failure reports its source path, line, projection or
+canonical field path, rejection reason, and correction; it never prints the
+row or its projected values.
+
+The output directory must not already exist. On success it is atomically
+created with:
+
+```text
+prepared/support/
+├── rows.jsonl
+└── manifest.json
+```
+
+`rows.jsonl` is compact, sorted-key UTF-8 JSONL with only:
+
+```json
+{"id":"chat-0104","input":"I cannot log in after changing my phone number.","metadata":{"_equiroute":{"source_line":1},"channel":"support-export"}}
+```
+
+`manifest.json` is a pretty, sorted-key v2 document. It records only source
+and output row counts and SHA-256 hashes, a fingerprint of the validated
+configuration, the input-size limit, and redaction-rule count. It deliberately
+does not retain source rows, canonical row values, source paths, projection
+pointers, redaction patterns, or replacement text. The source hash identifies
+the original bytes, while the output hash identifies the canonical sanitized
+rows.
+
 ## Persisted evidence
 
 Reports and training manifests are versioned documents too. They are emitted as UTF-8 JSON with sorted keys, no NaN, and a trailing newline; training manifests and semantic reports use compact separators, while split reports/manifests use readable indentation. A current persisted document carries `schema_version: "2"`; a v1 persisted document is read through the explicit migration path.
