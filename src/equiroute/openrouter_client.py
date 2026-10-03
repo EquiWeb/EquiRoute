@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import importlib
 import json
 import os
 from threading import Lock
@@ -53,18 +54,17 @@ SDKClientFactory: TypeAlias = Callable[..., AbstractContextManager[_SDKClient]]
 def _default_client_factory(
     *, api_key: str, server_url: str
 ) -> AbstractContextManager[_SDKClient]:
-    """Create the official SDK client without importing it before labeling."""
-    from openrouter import OpenRouter
-    from openrouter.utils import BackoffStrategy, RetryConfig
-    from openrouter.utils.logger import NoOpLogger
+    openrouter = importlib.import_module("openrouter")
+    openrouter_utils = importlib.import_module("openrouter.utils")
+    openrouter_logger = importlib.import_module("openrouter.utils.logger")
 
-    return OpenRouter(
+    return openrouter.OpenRouter(
         api_key=api_key,
         server_url=server_url,
-        debug_logger=NoOpLogger(),
-        retry_config=RetryConfig(
+        debug_logger=openrouter_logger.NoOpLogger(),
+        retry_config=openrouter_utils.RetryConfig(
             strategy="none",
-            backoff=BackoffStrategy(
+            backoff=openrouter_utils.BackoffStrategy(
                 initial_interval=0,
                 max_interval=0,
                 exponent=1.0,

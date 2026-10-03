@@ -64,3 +64,23 @@ class LabelingConfigError(SourceError):
 
 class SanitizedArtifactLoadError(SourceError):
     """A Stage-7 sanitized handoff could not be verified for labeling."""
+
+
+class ReviewConfigError(SourceError):
+    """A Stage-9 review configuration could not be read or validated."""
+
+
+class AcceptanceConfigError(SourceError):
+    """A Stage-9 acceptance configuration could not be read or validated."""
+
+
+class GoldQualityConfigError(SourceError):
+    """A Stage-9 gold-quality configuration could not be read or validated."""
+
+
+class CandidateArtifactLoadError(SourceError):
+    """A Stage-8 candidate artifact could not be verified for review or acceptance."""
+
+
+class ReviewRecordLoadError(SourceError):
+    """A Stage-9 review record could not be verified for acceptance."""

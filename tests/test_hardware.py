@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import equiroute.hardware as hardware
 from equiroute.hardware import select_device, select_training_capability
 
 
@@ -38,6 +39,24 @@ def test_select_device_prefers_available_accelerator(
 
 def test_select_device_falls_back_to_cpu_for_minimal_torch_fake() -> None:
     assert select_device(SimpleNamespace()) == "cpu"
+
+
+def test_default_import_falls_back_to_cpu_when_torch_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested: list[str] = []
+
+    def missing_torch(name: str) -> object:
+        requested.append(name)
+        raise ModuleNotFoundError(name=name)
+
+    monkeypatch.setattr(hardware.importlib, "import_module", missing_torch)
+
+    assert select_device() == "cpu"
+    assert select_training_capability() == hardware.TrainingCapability(
+        "cpu", "float32", "no"
+    )
+    assert requested == ["torch", "torch"]
 
 
 @pytest.mark.parametrize(

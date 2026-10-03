@@ -11,7 +11,10 @@ uv run pytest
 uv run python scripts/fixture_smoke.py
 ```
 
-The fixture smoke initializes a disposable starter project and validates its parent configuration. It is not a training or inference check. Keep model loading, network access, long-running training, and hardware-dependent investigation out of ordinary tests and CI.
+The fixture smoke initializes a disposable starter project, verifies the public
+CLI surface, and validates its parent configuration. It is not a training or
+inference check. Keep model loading, network access, long-running training,
+and hardware-dependent investigation out of ordinary tests and CI.
 
 Model-extra commands are manual operational work:
 
@@ -58,8 +61,29 @@ This script is manually invoked and excluded from CI. It refuses to run if the
 environment variable named by the configuration is absent, and prints only a
 canonical, non-secret manifest summary. Do not place credentials, raw inputs,
 policy text, or provider responses in shell output, normal logs, or the
-configuration. Stage 9 is the future explicit review/acceptance boundary; this
-release has no candidate acceptance or training path.
+configuration.
+
+## Stage-9 local review and acceptance
+
+Stage 9 requires no provider credential, network, or model extra. It consumes
+existing verified local artifacts:
+
+```bash
+uv run equiroute review-labels review.yaml
+# Reviewer edits only review.jsonl's review objects.
+uv run equiroute accept-labels acceptance.yaml
+```
+
+`review.jsonl` is the authoritative editable review input; `review.csv` is a
+read-only spreadsheet view. An approval identifies a reviewer and timestamp
+and is allowed only for a selected locally valid labeled candidate. Acceptance
+re-verifies all immutable Stage-7/Stage-8 and review evidence, accepts only
+such approvals, and applies the regular Stage-1 validation to emitted
+`examples.jsonl`. It never starts training. Sampling/quotas are deterministic
+per route, and review/acceptance reports surface rejection and approval state,
+quota shortfall, imbalance, and optional per-route gold metrics including
+invalid-decision rate. Treat source/provider/reviewer provenance in accepted
+metadata and review reports as sensitive local data.
 
 ## Device policy and diagnosis
 

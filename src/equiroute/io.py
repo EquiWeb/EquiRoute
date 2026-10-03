@@ -14,30 +14,48 @@ from pydantic import BaseModel, ValidationError
 
 from .decisions import DecisionValidationError, _argument_correction, validate_decision
 from .errors import (
+    AcceptanceConfigError,
+    CandidateArtifactLoadError,
     ConfigLoadError,
     ExampleLoadError,
+    GoldQualityConfigError,
     LabelingConfigError,
     RawIngestionConfigError,
     RawInputLoadError,
     RegistryLoadError,
+    ReviewConfigError,
+    ReviewRecordLoadError,
     SanitizedArtifactLoadError,
     SourceError,
 )
 from .migrations import (
     SchemaMigrationError,
+    migrate_acceptance_config,
+    migrate_gold_quality_config,
     migrate_labeling_config,
+    migrate_labeling_manifest,
     migrate_raw_ingestion_config,
     migrate_raw_ingestion_manifest,
+    migrate_review_config,
+    migrate_review_manifest,
     migrate_training_config,
 )
 
 from .schemas import (
+    AcceptanceConfig,
+    CandidateValidation,
     Decision,
     Example,
+    GoldQualityConfig,
+    LabelCandidate,
     LabelingConfig,
+    LabelingManifest,
     RawIngestionConfig,
     RawIngestionManifest,
     RawInputRow,
+    ReviewConfig,
+    ReviewManifest,
+    ReviewRow,
     RouteRegistry,
     TrainingConfig,
     _json_pointer_tokens,
@@ -86,6 +104,66 @@ class SanitizedHandoff:
     directory: Path
     manifest: RawIngestionManifest
     rows: tuple[LoadedSanitizedInput, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedLabelCandidate:
+    """A verified Stage-8 candidate and its immutable JSONL row digest."""
+
+    candidate: LabelCandidate
+    source: Path
+    line: int
+    sha256: str
+    validation: CandidateValidation
+
+
+@dataclass(frozen=True, slots=True)
+class LabelingHandoff:
+    """A Stage-8 candidate artifact bound to its verified Stage-7 source."""
+
+    directory: Path
+    manifest: LabelingManifest
+    rows: tuple[LoadedLabelCandidate, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedReviewRow:
+    """A verified review row whose immutable data matches the source artifacts."""
+
+    row: ReviewRow
+    source: Path
+    line: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewHandoff:
+    """A review report whose non-review fields remain bound to original inputs."""
+
+    manifest: ReviewManifest
+    rows: tuple[LoadedReviewRow, ...]
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewInputs:
+    """Verified immutable sources for a future review-report writer."""
+
+    config: ReviewConfig
+    sanitized: SanitizedHandoff
+    candidates: LabelingHandoff
+    registry: RouteRegistry
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptanceInputs:
+    """Verified sources plus only approved rows for a future acceptance writer."""
+
+    config: AcceptanceConfig
+    sanitized: SanitizedHandoff
+    candidates: LabelingHandoff
+    registry: RouteRegistry
+    review: ReviewHandoff
+    approved: tuple[LoadedReviewRow, ...]
 
 
 def iter_raw_inputs(
@@ -254,6 +332,116 @@ def load_labeling_config(path: str | Path) -> LabelingConfig:
     return _validate_labeling_config(document, source)
 
 
+def load_review_config(path: str | Path) -> ReviewConfig:
+    """Load one strict v2-only candidate-review configuration."""
+
+    source = Path(path)
+    document = _load_yaml_mapping(source, ReviewConfigError, "review configuration")
+    document = _migrate_stage9_config(
+        document,
+        source,
+        migrate_review_config,
+        ReviewConfigError,
+        "review configuration",
+    )
+    return _validate_model(
+        document, ReviewConfig, source, ReviewConfigError, "review configuration"
+    )
+
+
+def load_acceptance_config(path: str | Path) -> AcceptanceConfig:
+    """Load one strict v2-only label-acceptance configuration."""
+
+    source = Path(path)
+    document = _load_yaml_mapping(
+        source, AcceptanceConfigError, "acceptance configuration"
+    )
+    document = _migrate_stage9_config(
+        document,
+        source,
+        migrate_acceptance_config,
+        AcceptanceConfigError,
+        "acceptance configuration",
+    )
+    return _validate_model(
+        document,
+        AcceptanceConfig,
+        source,
+        AcceptanceConfigError,
+        "acceptance configuration",
+    )
+
+
+def load_gold_quality_config(path: str | Path) -> GoldQualityConfig:
+    """Load one strict v2-only generated-label gold-quality configuration."""
+
+    source = Path(path)
+    document = _load_yaml_mapping(
+        source, GoldQualityConfigError, "gold quality configuration"
+    )
+    document = _migrate_stage9_config(
+        document,
+        source,
+        migrate_gold_quality_config,
+        GoldQualityConfigError,
+        "gold quality configuration",
+    )
+    return _validate_model(
+        document,
+        GoldQualityConfig,
+        source,
+        GoldQualityConfigError,
+        "gold quality configuration",
+    )
+
+
+def resolve_review_paths(
+    config_path: str | Path, config: ReviewConfig
+) -> tuple[Path, Path, Path, Path, Path | None]:
+    """Resolve review inputs and optional gold data relative to its configuration."""
+
+    directory = Path(config_path).parent
+    return (
+        directory / config.sanitized,
+        directory / config.candidates,
+        directory / config.routes,
+        directory / config.output.directory,
+        directory / config.gold if config.gold is not None else None,
+    )
+
+
+def resolve_acceptance_paths(
+    config_path: str | Path, config: AcceptanceConfig
+) -> tuple[Path, Path, Path, Path, Path, Path, Path | None]:
+    """Resolve acceptance inputs and optional gold data relative to its configuration."""
+
+    directory = Path(config_path).parent
+    return (
+        directory / config.sanitized,
+        directory / config.candidates,
+        directory / config.routes,
+        directory / config.review,
+        directory / config.review_manifest,
+        directory / config.output.directory,
+        directory / config.gold if config.gold is not None else None,
+    )
+
+
+def resolve_gold_quality_paths(
+    config_path: str | Path, config: GoldQualityConfig
+) -> tuple[Path, Path, Path, Path, Path]:
+    """Resolve gold comparison inputs and output relative to its configuration."""
+
+    directory = Path(config_path).parent
+    return (
+        directory / config.sanitized,
+        directory / config.candidates,
+        directory / config.routes,
+        directory / config.gold,
+        directory / config.output.directory,
+    )
+
+
 def resolve_labeling_paths(
     config_path: str | Path, config: LabelingConfig
 ) -> tuple[Path, Path, Path]:
@@ -360,6 +548,278 @@ def load_sanitized_handoff(path: str | Path) -> SanitizedHandoff:
         rows.append(LoadedSanitizedInput(row=row, source=rows_path, line=line_number))
 
     return SanitizedHandoff(directory=directory, manifest=manifest, rows=tuple(rows))
+
+
+def load_labeling_handoff(
+    path: str | Path,
+    *,
+    sanitized: SanitizedHandoff,
+    registry: RouteRegistry,
+) -> LabelingHandoff:
+    """Verify a Stage-8 artifact against its Stage-7 handoff and registry."""
+
+    directory = Path(path)
+    manifest_path = directory / "manifest.json"
+    candidates_path = directory / "candidates.jsonl"
+    manifest_document = _load_artifact_manifest(
+        manifest_path, CandidateArtifactLoadError, "candidate artifact manifest"
+    )
+    try:
+        migrated = migrate_labeling_manifest(manifest_document)
+    except SchemaMigrationError as error:
+        raise CandidateArtifactLoadError(
+            str(error),
+            source=manifest_path,
+            path="schema_version",
+            correction='use the Stage-8 schema_version "2" manifest',
+        ) from error
+    assert isinstance(migrated, dict)
+    manifest = _validate_model(
+        migrated,
+        LabelingManifest,
+        manifest_path,
+        CandidateArtifactLoadError,
+        "candidate artifact manifest",
+    )
+    candidates_bytes = _read_verified_artifact(
+        candidates_path,
+        manifest.output.rows,
+        manifest.output.sha256,
+        CandidateArtifactLoadError,
+        "candidate rows",
+    )
+    _verify_labeling_handoff_bindings(
+        manifest,
+        manifest_path,
+        sanitized=sanitized,
+        registry=registry,
+    )
+
+    if len(sanitized.rows) != manifest.output.rows:
+        raise CandidateArtifactLoadError(
+            "candidate artifact does not cover every sanitized input",
+            source=candidates_path,
+            correction="use the unmodified Stage-8 artifact for this handoff",
+        )
+
+    rows: list[LoadedLabelCandidate] = []
+    for line_number, raw_line in enumerate(
+        candidates_bytes.splitlines(keepends=True), start=1
+    ):
+        document = _load_artifact_json_object(
+            candidates_path,
+            line_number,
+            raw_line,
+            CandidateArtifactLoadError,
+            "candidate row",
+        )
+        candidate = _validate_model(
+            document,
+            LabelCandidate,
+            candidates_path,
+            CandidateArtifactLoadError,
+            "candidate row",
+            line_number,
+        )
+        expected = sanitized.rows[line_number - 1].row
+        if (
+            candidate.provenance.source_id != expected.id
+            or candidate.provenance.source_line
+            != expected.metadata["_equiroute"]["source_line"]
+        ):
+            raise CandidateArtifactLoadError(
+                "candidate source binding does not match the sanitized handoff",
+                source=candidates_path,
+                line=line_number,
+                correction="use the unmodified Stage-8 artifact for this handoff",
+            )
+        _verify_candidate_manifest_provenance(
+            candidate, manifest, candidates_path, line_number
+        )
+        rows.append(
+            LoadedLabelCandidate(
+                candidate=candidate,
+                source=candidates_path,
+                line=line_number,
+                sha256=hashlib.sha256(raw_line).hexdigest(),
+                validation=_candidate_validation(candidate, registry),
+            )
+        )
+    return LabelingHandoff(directory=directory, manifest=manifest, rows=tuple(rows))
+
+
+def load_review_manifest(path: str | Path) -> ReviewManifest:
+    """Load one strict v2-only review manifest without exposing report contents."""
+
+    source = Path(path)
+    document = _load_artifact_manifest(source, ReviewRecordLoadError, "review manifest")
+    try:
+        migrated = migrate_review_manifest(document)
+    except SchemaMigrationError as error:
+        raise ReviewRecordLoadError(
+            str(error),
+            source=source,
+            path="schema_version",
+            correction='use the Stage-9 schema_version "2" manifest',
+        ) from error
+    assert isinstance(migrated, dict)
+    return _validate_model(
+        migrated, ReviewManifest, source, ReviewRecordLoadError, "review manifest"
+    )
+
+
+def load_review_handoff(
+    path: str | Path,
+    *,
+    manifest: ReviewManifest,
+    manifest_path: str | Path,
+    sanitized: SanitizedHandoff,
+    candidates: LabelingHandoff,
+    registry: RouteRegistry,
+) -> ReviewHandoff:
+    """Verify a review report while allowing only reviewer decision fields to change."""
+
+    report_path = Path(path)
+    source_manifest = Path(manifest_path)
+    _verify_review_manifest_bindings(
+        manifest,
+        source_manifest,
+        sanitized=sanitized,
+        candidates=candidates,
+        registry=registry,
+    )
+    expected_rows = len(sanitized.rows)
+    if len(candidates.rows) != expected_rows or manifest.rows.rows != expected_rows:
+        raise ReviewRecordLoadError(
+            "review report row count does not match verified source artifacts",
+            source=source_manifest,
+            path="rows",
+            correction="use review inputs from one verified Stage-7 and Stage-8 handoff",
+        )
+
+    review_bytes = _read_artifact_bytes(
+        report_path, ReviewRecordLoadError, "review rows"
+    )
+    _verify_artifact_lf_and_count(
+        review_bytes,
+        report_path,
+        manifest.rows.rows,
+        ReviewRecordLoadError,
+        "review rows",
+    )
+    rows: list[LoadedReviewRow] = []
+    immutable = hashlib.sha256()
+    for line_number, raw_line in enumerate(
+        review_bytes.splitlines(keepends=True), start=1
+    ):
+        document = _load_artifact_json_object(
+            report_path,
+            line_number,
+            raw_line,
+            ReviewRecordLoadError,
+            "review row",
+        )
+        row = _validate_model(
+            document,
+            ReviewRow,
+            report_path,
+            ReviewRecordLoadError,
+            "review row",
+            line_number,
+        )
+        expected_candidate = candidates.rows[line_number - 1]
+        expected_input = sanitized.rows[line_number - 1].row
+        if (
+            row.source_id != expected_input.id
+            or row.input != expected_input.input
+            or row.candidate != expected_candidate.candidate
+            or row.validation != expected_candidate.validation
+        ):
+            raise ReviewRecordLoadError(
+                "review row immutable data does not match verified source artifacts",
+                source=report_path,
+                line=line_number,
+                correction="edit only the review decision fields",
+            )
+        immutable.update(_immutable_review_row_bytes(row))
+        immutable.update(b"\n")
+        rows.append(LoadedReviewRow(row=row, source=report_path, line=line_number))
+    if immutable.hexdigest() != manifest.immutable_fingerprint:
+        raise ReviewRecordLoadError(
+            "review report immutable fingerprint does not match its manifest",
+            source=report_path,
+            path="immutable_fingerprint",
+            correction="edit only the review decision fields",
+        )
+    return ReviewHandoff(
+        manifest=manifest,
+        rows=tuple(rows),
+        sha256=hashlib.sha256(review_bytes).hexdigest(),
+    )
+
+
+def approved_review_rows(handoff: ReviewHandoff) -> tuple[LoadedReviewRow, ...]:
+    """Return only schema-validated approvals for future Stage-1 acceptance."""
+
+    return tuple(
+        loaded for loaded in handoff.rows if loaded.row.review.decision == "approved"
+    )
+
+
+def load_review_inputs(config_path: str | Path) -> ReviewInputs:
+    """Load all immutable, verified inputs needed to generate a review report."""
+
+    config = load_review_config(config_path)
+    sanitized_path, candidates_path, registry_path, _, _ = resolve_review_paths(
+        config_path, config
+    )
+    sanitized = load_sanitized_handoff(sanitized_path)
+    registry = load_route_registry(registry_path)
+    candidates = load_labeling_handoff(
+        candidates_path, sanitized=sanitized, registry=registry
+    )
+    return ReviewInputs(
+        config=config,
+        sanitized=sanitized,
+        candidates=candidates,
+        registry=registry,
+    )
+
+
+def load_acceptance_inputs(config_path: str | Path) -> AcceptanceInputs:
+    """Load only approved candidates after verifying every immutable input binding."""
+
+    config = load_acceptance_config(config_path)
+    (
+        sanitized_path,
+        candidates_path,
+        registry_path,
+        review_path,
+        review_manifest_path,
+        _,
+        _,
+    ) = resolve_acceptance_paths(config_path, config)
+    sanitized = load_sanitized_handoff(sanitized_path)
+    registry = load_route_registry(registry_path)
+    candidates = load_labeling_handoff(
+        candidates_path, sanitized=sanitized, registry=registry
+    )
+    review = load_review_handoff(
+        review_path,
+        manifest=load_review_manifest(review_manifest_path),
+        manifest_path=review_manifest_path,
+        sanitized=sanitized,
+        candidates=candidates,
+        registry=registry,
+    )
+    return AcceptanceInputs(
+        config=config,
+        sanitized=sanitized,
+        candidates=candidates,
+        registry=registry,
+        review=review,
+        approved=approved_review_rows(review),
+    )
 
 
 def load_examples(path: str | Path, registry: RouteRegistry) -> list[Example]:
@@ -480,6 +940,251 @@ def _load_sanitized_json_object(
             correction="use the unmodified rows.jsonl emitted by Stage 7",
         )
     return document
+
+
+def _load_artifact_manifest(
+    source: Path, error_type: type[SourceError], document_name: str
+) -> dict[str, Any]:
+    """Load an artifact manifest without ever reflecting its contents."""
+
+    raw_document = _read_artifact_bytes(source, error_type, document_name)
+    try:
+        document = json.loads(
+            raw_document.decode("utf-8"),
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise error_type(
+            f"{document_name} must be valid UTF-8 JSON",
+            source=source,
+            correction="use the unmodified artifact manifest",
+        ) from error
+    if not isinstance(document, dict):
+        raise error_type(
+            f"{document_name} must be a JSON object",
+            source=source,
+            correction="use the unmodified artifact manifest",
+        )
+    return document
+
+
+def _load_artifact_json_object(
+    source: Path,
+    line_number: int,
+    raw_line: bytes,
+    error_type: type[SourceError],
+    document_name: str,
+) -> dict[str, Any]:
+    """Parse untrusted artifact JSON without placing its content in diagnostics."""
+
+    try:
+        document = json.loads(
+            raw_line.decode("utf-8"),
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise error_type(
+            f"{document_name} must be valid UTF-8 JSON",
+            source=source,
+            line=line_number,
+            path="$",
+            correction="use the unmodified JSONL artifact",
+        ) from error
+    if not isinstance(document, dict):
+        raise error_type(
+            f"{document_name} must be a JSON object",
+            source=source,
+            line=line_number,
+            path="$",
+            correction="use the unmodified JSONL artifact",
+        )
+    return document
+
+
+def _read_artifact_bytes(
+    source: Path, error_type: type[SourceError], document_name: str
+) -> bytes:
+    try:
+        return source.read_bytes()
+    except OSError as error:
+        raise error_type(
+            f"could not read {document_name}",
+            source=source,
+            correction="ensure the artifact file exists and is readable",
+        ) from error
+
+
+def _verify_artifact_lf_and_count(
+    contents: bytes,
+    source: Path,
+    expected_rows: int,
+    error_type: type[SourceError],
+    document_name: str,
+) -> None:
+    if contents and not contents.endswith(b"\n"):
+        raise error_type(
+            f"{document_name} must end every JSON object with an LF",
+            source=source,
+            correction="use the emitted JSONL artifact",
+        )
+    if contents.count(b"\n") != expected_rows:
+        raise error_type(
+            f"{document_name} row count does not match its manifest",
+            source=source,
+            path="rows",
+            correction="use the complete emitted JSONL artifact",
+        )
+
+
+def _read_verified_artifact(
+    source: Path,
+    expected_rows: int,
+    expected_sha256: str,
+    error_type: type[SourceError],
+    document_name: str,
+) -> bytes:
+    contents = _read_artifact_bytes(source, error_type, document_name)
+    if hashlib.sha256(contents).hexdigest() != expected_sha256:
+        raise error_type(
+            f"{document_name} SHA-256 does not match its manifest",
+            source=source,
+            path="sha256",
+            correction="use the unmodified emitted artifact",
+        )
+    _verify_artifact_lf_and_count(
+        contents, source, expected_rows, error_type, document_name
+    )
+    return contents
+
+
+def _file_sha256(
+    source: Path, error_type: type[SourceError], document_name: str
+) -> str:
+    return hashlib.sha256(
+        _read_artifact_bytes(source, error_type, document_name)
+    ).hexdigest()
+
+
+def _canonical_json_sha256(document: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            document,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _candidate_validation(
+    candidate: LabelCandidate, registry: RouteRegistry
+) -> CandidateValidation:
+    if candidate.status == "rejected":
+        return CandidateValidation(valid=False, reason="provider_rejected")
+    assert candidate.decision is not None
+    try:
+        validate_decision(candidate.decision, registry)
+    except DecisionValidationError as error:
+        return CandidateValidation(valid=False, reason=error.category)
+    return CandidateValidation(valid=True)
+
+
+def _verify_labeling_handoff_bindings(
+    manifest: LabelingManifest,
+    manifest_path: Path,
+    *,
+    sanitized: SanitizedHandoff,
+    registry: RouteRegistry,
+) -> None:
+    if (
+        manifest.input.rows != sanitized.manifest.output.rows
+        or manifest.input.sha256 != sanitized.manifest.output.sha256
+        or manifest.input_manifest_fingerprint
+        != _file_sha256(
+            sanitized.directory / "manifest.json",
+            CandidateArtifactLoadError,
+            "sanitized handoff manifest",
+        )
+        or manifest.registry_fingerprint
+        != _canonical_json_sha256(registry.model_dump(mode="json"))
+    ):
+        raise CandidateArtifactLoadError(
+            "candidate manifest is not bound to the supplied sanitized handoff and registry",
+            source=manifest_path,
+            correction="use artifacts from the same Stage-7 and Stage-8 run",
+        )
+
+
+def _verify_candidate_manifest_provenance(
+    candidate: LabelCandidate,
+    manifest: LabelingManifest,
+    source: Path,
+    line_number: int,
+) -> None:
+    provenance = candidate.provenance
+    if (
+        provenance.policy_fingerprint != manifest.policy_fingerprint
+        or provenance.registry_fingerprint != manifest.registry_fingerprint
+        or provenance.provider_model != manifest.provider_model
+        or provenance.provider_endpoint != manifest.provider_endpoint
+    ):
+        raise CandidateArtifactLoadError(
+            "candidate provenance does not match its artifact manifest",
+            source=source,
+            line=line_number,
+            correction="use the unmodified Stage-8 artifact",
+        )
+
+
+def _verify_review_manifest_bindings(
+    manifest: ReviewManifest,
+    manifest_path: Path,
+    *,
+    sanitized: SanitizedHandoff,
+    candidates: LabelingHandoff,
+    registry: RouteRegistry,
+) -> None:
+    if (
+        manifest.sanitized.rows != sanitized.manifest.output.rows
+        or manifest.sanitized.sha256 != sanitized.manifest.output.sha256
+        or manifest.sanitized_manifest_fingerprint
+        != _file_sha256(
+            sanitized.directory / "manifest.json",
+            ReviewRecordLoadError,
+            "sanitized handoff manifest",
+        )
+        or manifest.candidates.rows != candidates.manifest.output.rows
+        or manifest.candidates.sha256 != candidates.manifest.output.sha256
+        or manifest.candidate_manifest_fingerprint
+        != _file_sha256(
+            candidates.directory / "manifest.json",
+            ReviewRecordLoadError,
+            "candidate artifact manifest",
+        )
+        or manifest.registry_fingerprint
+        != _canonical_json_sha256(registry.model_dump(mode="json"))
+        or manifest.policy_fingerprint != candidates.manifest.policy_fingerprint
+        or manifest.provider_model != candidates.manifest.provider_model
+        or manifest.provider_endpoint != candidates.manifest.provider_endpoint
+    ):
+        raise ReviewRecordLoadError(
+            "review manifest is not bound to the supplied candidate, handoff, and registry artifacts",
+            source=manifest_path,
+            correction="use review inputs from one verified labeling run",
+        )
+
+
+def _immutable_review_row_bytes(row: ReviewRow) -> bytes:
+    document = row.model_dump(mode="json")
+    document.pop("review")
+    return json.dumps(
+        document,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def _project_raw_input(
@@ -749,6 +1454,26 @@ def _migrate_labeling_config(document: dict[str, Any], source: Path) -> dict[str
         migrated = migrate_labeling_config(document)
     except SchemaMigrationError as error:
         raise LabelingConfigError(
+            str(error),
+            source=source,
+            path="schema_version",
+            correction='set schema_version to "2"',
+        ) from error
+    assert isinstance(migrated, dict)
+    return migrated
+
+
+def _migrate_stage9_config(
+    document: dict[str, Any],
+    source: Path,
+    migration: Any,
+    error_type: type[SourceError],
+    document_name: str,
+) -> dict[str, Any]:
+    try:
+        migrated = migration(document)
+    except SchemaMigrationError as error:
+        raise error_type(
             str(error),
             source=source,
             path="schema_version",

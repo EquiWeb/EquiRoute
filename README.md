@@ -136,9 +136,8 @@ only candidate decisions or rejection reasons and provenance fingerprints,
 counts, hashes, provider model/endpoint, and policy/registry fingerprints.
 It does not retain input text, the policy text, provider response text, or
 credentials. Normal command output and errors never log secrets, policy text,
-sanitized input, or provider responses. Review candidates independently before
-any later workflow; Stage 9, if introduced, is the explicit acceptance and
-training boundary, not part of this command.
+credentials. Review candidates in the explicit Stage-9 workflow before any
+later use; `label` does not make a candidate a training row.
 
 For a deliberately live SDK check, create a dedicated configuration for one
 non-sensitive Stage-7 sanitized row and a new output directory, then run this
@@ -153,6 +152,57 @@ uv run python scripts/openrouter_live_smoke.py labeling-live-smoke.yaml
 The smoke script refuses to run when the credential environment variable named
 by its configuration is absent. It prints only the same safe canonical manifest
 summary; do not use ordinary or sensitive production rows for this live check.
+
+## Review and accept generated labels
+
+Stage 9 is local and model-free. It verifies the immutable Stage-7 sanitized
+handoff and Stage-8 candidate artifact before creating a new review directory:
+
+```bash
+uv run equiroute review-labels review.yaml
+```
+
+The resulting `review.jsonl` is the authoritative reviewer-edit input.
+Reviewers may change only each row's `review` object: leave it
+`{"decision":"unreviewed"}`, or record `approved` or `rejected` with a
+non-empty reviewer and RFC 3339 `reviewed_at` timestamp. Rejections also need
+one of `incorrect_route`, `incorrect_arguments`, `insufficient_context`, or
+`other`. Approval is valid only for a row that Stage 9 selected for review,
+whose candidate is locally valid, and whose candidate status is `labeled`;
+reviewers do not edit the candidate route decision, arguments, validation, or
+provenance.
+
+`review.csv` is a read-only spreadsheet view, not an acceptance input. The
+review directory also includes `report.json` and `manifest.json`. Both Stage-9
+commands print only their compact, canonical manifest summary on success;
+normal errors omit provider credentials and raw-source contents. Optional
+deterministic review sampling sets per-route quotas; its report makes provider
+rejections, locally invalid rows, unreviewed/rejected/approved counts, quota
+shortfalls, and route imbalance visible. An optional hand-labeled gold JSONL
+compares candidate decisions by route and reports valid, invalid, missing,
+route-correct, exact-decision-correct, and invalid-decision-rate counts.
+
+After editing only `review.jsonl`, explicitly compile the approved subset:
+
+```bash
+uv run equiroute accept-labels acceptance.yaml
+```
+
+Acceptance re-verifies the Stage-7, Stage-8, registry, and review-manifest
+bindings, including an immutable fingerprint of every non-review field. It
+accepts only explicit approvals and runs the resulting `examples.jsonl`
+through the same Stage-1 dataset validation as hand-authored data. Optional
+deterministic per-route acceptance quotas can select a bounded approved
+subset; zero is a valid quota. The resulting `report.json` repeats review,
+quota/imbalance, and optional gold-quality evidence. It does not invoke
+`train`, `continue`, or any model/provider command: add accepted examples to
+curated partitions and run normal validation/training deliberately.
+
+Every accepted row stores `_equiroute` provenance binding its source ID and
+line, candidate and handoff hashes, handoff and review-manifest fingerprints,
+registry and policy fingerprints, provider model/endpoint, reviewer,
+timestamp, and approved decision. This is traceability, not automatic
+trust or automatic training.
 
 ## What to read next
 

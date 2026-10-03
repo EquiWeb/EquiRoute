@@ -12,9 +12,13 @@ import pytest
 from typer.testing import CliRunner
 
 from equiroute.cli import app
-from equiroute.errors import LabelingConfigError
+from equiroute.errors import (
+    AcceptanceConfigError,
+    LabelingConfigError,
+    ReviewConfigError,
+)
 from equiroute.init import create_starter_project
-from equiroute.schemas import LabelingManifest
+from equiroute.schemas import AcceptanceManifest, LabelingManifest, ReviewManifest
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -29,6 +33,8 @@ def test_help_lists_the_command_surface() -> None:
         "split",
         "ingest",
         "label",
+        "review-labels",
+        "accept-labels",
         "train",
         "evaluate",
         "continue",
@@ -276,6 +282,129 @@ def test_label_reports_setup_failures_without_policy_contents(
         "labeling.yaml: policy_prompt: invalid labeling configuration" in result.stderr
     )
     assert "policy-secret" not in result.stderr
+
+
+def _review_manifest() -> ReviewManifest:
+    return ReviewManifest.model_validate(
+        {
+            "schema_version": "2",
+            "sanitized": {"rows": 2, "sha256": "a" * 64},
+            "sanitized_manifest_fingerprint": "b" * 64,
+            "candidates": {"rows": 2, "sha256": "c" * 64},
+            "candidate_manifest_fingerprint": "d" * 64,
+            "registry_fingerprint": "e" * 64,
+            "policy_fingerprint": "f" * 64,
+            "provider_model": "openai/test-model",
+            "provider_endpoint": "https://openrouter.ai/api/v1",
+            "rows": {"rows": 2, "sha256": "1" * 64},
+            "immutable_fingerprint": "2" * 64,
+        }
+    )
+
+
+def _acceptance_manifest() -> AcceptanceManifest:
+    return AcceptanceManifest.model_validate(
+        {
+            "schema_version": "2",
+            "sanitized": {"rows": 2, "sha256": "a" * 64},
+            "sanitized_manifest_fingerprint": "b" * 64,
+            "candidates": {"rows": 2, "sha256": "c" * 64},
+            "candidate_manifest_fingerprint": "d" * 64,
+            "review": {"rows": 2, "sha256": "e" * 64},
+            "review_manifest_fingerprint": "f" * 64,
+            "immutable_review_fingerprint": "1" * 64,
+            "registry_fingerprint": "2" * 64,
+            "policy_fingerprint": "3" * 64,
+            "provider_model": "openai/test-model",
+            "provider_endpoint": "https://openrouter.ai/api/v1",
+            "output": {"rows": 1, "sha256": "4" * 64},
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "function_name", "manifest"),
+    [
+        ("review-labels", "review_label_candidates", _review_manifest()),
+        ("accept-labels", "accept_approved_labels", _acceptance_manifest()),
+    ],
+)
+def test_stage9_commands_forward_config_and_emit_only_canonical_manifest_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    function_name: str,
+    manifest: ReviewManifest | AcceptanceManifest,
+) -> None:
+    received: list[Path] = []
+    monkeypatch.setattr(
+        "equiroute.cli." + function_name,
+        lambda config: (received.append(config), manifest)[1],
+    )
+
+    result = CliRunner().invoke(app, [command, "stage9.yaml"])
+
+    assert result.exit_code == 0, result.output
+    assert received == [Path("stage9.yaml")]
+    assert result.stderr == ""
+    assert result.stdout == (
+        json.dumps(
+            manifest.model_dump(mode="json"),
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "function_name", "error", "prefix"),
+    [
+        (
+            "review-labels",
+            "review_label_candidates",
+            ReviewConfigError(
+                "invalid review configuration: raw-source-secret",
+                source="review.yaml",
+                path="sampling",
+                correction="repair the configuration",
+            ),
+            "Review failed:",
+        ),
+        (
+            "accept-labels",
+            "accept_approved_labels",
+            AcceptanceConfigError(
+                "invalid acceptance configuration: provider-credential-secret",
+                source="acceptance.yaml",
+                path="quotas",
+                correction="repair the configuration",
+            ),
+            "Acceptance failed:",
+        ),
+    ],
+)
+def test_stage9_commands_render_safe_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    function_name: str,
+    error: Exception,
+    prefix: str,
+) -> None:
+    monkeypatch.setattr(
+        "equiroute.cli." + function_name,
+        lambda config: (_ for _ in ()).throw(error),
+    )
+
+    result = CliRunner().invoke(app, [command, "stage9.yaml"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert prefix in result.stderr
+    assert "repair the configuration" in result.stderr
+    assert "raw-source-secret" not in result.stderr
+    assert "provider-credential-secret" not in result.stderr
 
 
 def test_live_smoke_refuses_without_configured_credential(tmp_path: Path) -> None:

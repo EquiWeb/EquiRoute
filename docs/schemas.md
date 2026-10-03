@@ -175,8 +175,8 @@ separately JSON-quoted as untrusted data and accompanied by an instruction not
 to execute instructions it contains. A response is only a candidate: provider
 refusal, timeout, rate limit, transport failure, malformed JSON, unknown
 route, or invalid arguments emits a schema-valid rejected candidate. Nothing
-in Stage 8 makes a candidate a training example. That review/acceptance
-decision is the Stage-9 boundary and is intentionally not implemented here.
+in Stage 8 makes a candidate a training example. Stage 9 is the separate,
+local review and explicit acceptance boundary.
 
 The atomically created candidate directory contains:
 
@@ -194,6 +194,80 @@ endpoint. Neither artifact retains sanitized input text, policy text, raw
 provider response content, or credentials. Successful CLI stdout is only that
 canonical manifest summary; normal errors and output do not log secrets or
 those contents.
+
+## Stage-9 review and acceptance configuration
+
+`equiroute review-labels CONFIG` reads verified Stage-7 and Stage-8 artifacts
+and creates a fresh review directory. Its strict v2 configuration is:
+
+```yaml
+schema_version: "2"
+sanitized: prepared/support
+candidates: candidates/support-review
+routes: routes/parent.yaml
+output:
+  directory: review/support
+report_format: jsonl
+sampling:
+  seed: 42
+  per_route:
+    billing_support: 25
+gold: data/review-gold.jsonl
+```
+
+All paths are relative to `CONFIG`. `report_format` may be `jsonl` or `csv`;
+both report forms are emitted. The `sampling` and `gold` fields are optional.
+Sampling is deterministic per route and quotas are non-negative. The review
+artifact includes `review.jsonl`, `review.csv`, `report.json`, and
+`manifest.json`; the output directory must not already exist.
+
+`review.jsonl` is the authoritative reviewer-edit input. Each line retains
+the original sanitized input, candidate, local validation, selection flag, and
+provenance. Reviewers may alter only:
+
+```json
+{"review":{"decision":"approved","reviewer":"reviewer-1","reviewed_at":"2026-10-03T12:31:45Z"}}
+```
+
+or a corresponding rejection with one of `incorrect_route`,
+`incorrect_arguments`, `insufficient_context`, or `other`. `unreviewed` has
+no reviewer/timestamp/reason. Approvals require a selected, valid `labeled`
+candidate. Reviewers must not edit candidate decisions, arguments,
+validation, selection, or provenance. `review.csv` is a read-only view and
+cannot be used as the acceptance input.
+
+`equiroute accept-labels CONFIG` verifies the JSONL and its review manifest,
+then emits only approved, Stage-1-valid training examples:
+
+```yaml
+schema_version: "2"
+sanitized: prepared/support
+candidates: candidates/support-review
+routes: routes/parent.yaml
+review: review/support/review.jsonl
+review_manifest: review/support/manifest.json
+output:
+  directory: accepted/support
+quotas:
+  seed: 42
+  per_route:
+    billing_support: 20
+gold: data/review-gold.jsonl
+```
+
+`quotas` and `gold` are optional. Acceptance accepts explicit approvals only,
+verifies all Stage-7/Stage-8/registry/review bindings and every immutable
+review-row field, then applies deterministic non-negative per-route quotas
+when configured. It writes `examples.jsonl`, `report.json`, and
+`manifest.json`; it does not train, continue, or change training
+configurations. Every accepted example's `_equiroute` metadata preserves
+source, candidate, handoff, registry, policy, provider, review decision, and
+reviewer/timestamp provenance.
+
+Both Stage-9 reports expose per-route candidate/rejection/review/approval and
+quota counts, quota shortfalls, and imbalance. When `gold` is supplied, they
+also report per-route generated-label valid, invalid, and missing decisions;
+route and exact-decision correctness; and invalid-decision rates.
 
 ## Persisted evidence
 

@@ -21,11 +21,13 @@ from .errors import (
     RawInputLoadError,
     SourceError,
 )
+from .acceptance import accept_approved_labels
 from .evaluation import EvaluationError, evaluate_artifact
 from .init import InitError, create_starter_project
 from .io import load_route_registry, load_training_config
 from .labeling import label_sanitized_inputs
 from .raw_input import ingest_raw_inputs
+from .review import review_label_candidates
 from .training import TrainingError, continue_router, export_router, train_router
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -143,6 +145,80 @@ def _safe_labeling_error(error: SourceError) -> str:
     if error.correction:
         rendered += f"; correction: {error.correction}"
     return rendered
+
+
+def _safe_stage9_error(error: EquiRouteError) -> str:
+    """Render review/acceptance errors without artifact or configuration contents."""
+
+    if not isinstance(error, SourceError):
+        return "local contract validation failed"
+
+    reason = error.message
+    for unsafe_prefix, safe_reason in (
+        ("could not decode UTF-8:", "could not decode UTF-8"),
+        ("malformed JSON:", "malformed JSON"),
+        ("malformed YAML:", "malformed YAML"),
+        ("could not read", "could not read the local artifact"),
+        ("invalid review configuration:", "invalid review configuration"),
+        ("invalid acceptance configuration:", "invalid acceptance configuration"),
+    ):
+        if reason.startswith(unsafe_prefix):
+            reason = safe_reason
+            break
+
+    location = error.source
+    if error.line is not None:
+        location += f":{error.line}"
+    if error.path:
+        location += f": {error.path}"
+    rendered = f"{location}: {reason}"
+    if error.correction:
+        rendered += f"; correction: {error.correction}"
+    return rendered
+
+
+@app.command(name="review-labels")
+def review_labels(
+    config: Annotated[Path, typer.Argument()],
+) -> None:
+    """Create an editable Stage-9 review report from verified candidates."""
+
+    try:
+        manifest = review_label_candidates(config)
+    except EquiRouteError as error:
+        typer.echo(f"Review failed: {_safe_stage9_error(error)}", err=True)
+        raise typer.Exit(code=1) from error
+    except OSError as error:
+        typer.echo(
+            "Review failed: could not create the review output; "
+            "correction: ensure the output parent exists and is writable",
+            err=True,
+        )
+        raise typer.Exit(code=1) from error
+
+    typer.echo(_canonical_json(manifest.model_dump(mode="json")))
+
+
+@app.command(name="accept-labels")
+def accept_labels(
+    config: Annotated[Path, typer.Argument()],
+) -> None:
+    """Compile explicitly approved Stage-9 candidates into training JSONL."""
+
+    try:
+        manifest = accept_approved_labels(config)
+    except EquiRouteError as error:
+        typer.echo(f"Acceptance failed: {_safe_stage9_error(error)}", err=True)
+        raise typer.Exit(code=1) from error
+    except OSError as error:
+        typer.echo(
+            "Acceptance failed: could not create the acceptance output; "
+            "correction: ensure the output parent exists and is writable",
+            err=True,
+        )
+        raise typer.Exit(code=1) from error
+
+    typer.echo(_canonical_json(manifest.model_dump(mode="json")))
 
 
 @app.command()

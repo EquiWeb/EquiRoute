@@ -103,9 +103,53 @@ SHA-256 values, the source manifest, policy and registry fingerprints, and the
 provider model/endpoint. Candidate rows retain non-secret request provenance
 only; neither artifact stores sanitized input text, policy text, provider
 response content, or credentials. Normal stdout is the canonical safe manifest
-summary, and normal errors do not echo those values. Independent human review
-and any acceptance/training conversion are reserved for the Stage-9 boundary;
-they are not included here.
+summary, and normal errors do not echo those values. Stage 8 ends with
+untrusted candidates. Only the separate, local Stage-9 review and acceptance
+workflow can produce validated training JSONL; `label` never trains.
+
+## Stage-9 review and acceptance
+
+Create a review report from verified Stage-7 sanitized inputs, the Stage-8
+candidate artifact, and the active route registry:
+
+```bash
+uv run equiroute review-labels review.yaml
+```
+
+The new output directory contains `review.jsonl`, `review.csv`, `report.json`,
+and `manifest.json`. `review.jsonl` is the authoritative reviewer-edit input.
+The CSV is a read-only convenience view and is never read by
+`equiroute accept-labels`. Reviewers may edit only the `review` object on a
+JSONL row. Its initial state is `{"decision":"unreviewed"}`. An approval or
+rejection requires a reviewer name and RFC 3339 timestamp; a rejection also
+requires a finite rejection reason. A reviewer cannot approve an unselected,
+invalid, or provider-rejected candidate, and cannot correct candidate route
+decisions or arguments by editing the report.
+
+Optional `sampling` deterministically chooses reviewable valid candidates by
+per-route quota. `report.json` exposes candidate/provider rejection and local
+validation outcomes, review state counts, quota shortfalls, and route
+imbalance. An optional hand-labeled `gold` set compares candidate decisions
+by route, including valid/invalid/missing decisions, route and exact-decision
+correctness, and invalid-decision rate.
+
+After reviewers deliberately update `review.jsonl`, compile the approved
+subset with a separate configuration:
+
+```bash
+uv run equiroute accept-labels acceptance.yaml
+```
+
+Acceptance verifies the original handoffs, active registry, review manifest,
+and an immutable fingerprint of every review-row field except `review`.
+It accepts only explicit approvals, validates the generated `examples.jsonl`
+with the same Stage-1 rules as hand-authored examples, and emits a manifest and
+quality report. Optional deterministic per-route `quotas` can limit accepted
+approvals; zero quotas are permitted. The report carries review,
+quota/imbalance, and optional gold evidence. Accepted rows retain source,
+candidate, handoff, registry, policy, provider, reviewer, and reviewed-time
+provenance. Acceptance never calls training or continuation; operators choose
+whether and how to curate accepted rows into normal training partitions.
 
 ## Export and deployment boundary
 

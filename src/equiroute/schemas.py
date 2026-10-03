@@ -9,15 +9,23 @@ from typing import Any, Literal
 from .model import FUNCTIONGEMMA_LORA_DROPOUT, FUNCTIONGEMMA_LORA_TARGET_MODULES
 
 from .migrations import (
+    migrate_acceptance_config,
+    migrate_acceptance_manifest,
     migrate_comparative_evaluation,
     migrate_dataset_manifest,
     migrate_dataset_report,
     migrate_evaluation_report,
+    migrate_gold_quality_config,
+    migrate_gold_quality_report,
     migrate_label_candidate,
     migrate_labeling_config,
     migrate_labeling_manifest,
     migrate_raw_ingestion_config,
     migrate_raw_ingestion_manifest,
+    migrate_review_config,
+    migrate_review_manifest,
+    migrate_review_quality_report,
+    migrate_review_row,
     migrate_training_config,
     migrate_training_evaluation,
     migrate_training_manifest,
@@ -506,6 +514,347 @@ class LabelingManifest(StrictModel):
     @classmethod
     def migrate_schema_version(cls, document: Any) -> Any:
         return migrate_labeling_manifest(document)
+
+
+class Stage9Output(StrictModel):
+    """A future Stage-9 writer output directory."""
+
+    directory: str = Field(min_length=1)
+
+
+class RouteSampling(StrictModel):
+    """Deterministic per-route review or acceptance quotas."""
+
+    seed: int
+    per_route: dict[str, int] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_quotas(self) -> RouteSampling:
+        for route, quota in self.per_route.items():
+            if not route:
+                raise ValueError("per_route keys must be non-empty route names")
+            if quota < 0:
+                raise ValueError(
+                    "per_route quotas must be greater than or equal to zero"
+                )
+        return self
+
+
+class ReviewConfig(StrictModel):
+    """Strict v2-only configuration for generating a human review report."""
+
+    schema_version: Literal["2"]
+    sanitized: str = Field(min_length=1)
+    candidates: str = Field(min_length=1)
+    routes: str = Field(min_length=1)
+    output: Stage9Output
+    report_format: Literal["jsonl", "csv"] = "jsonl"
+    sampling: RouteSampling | None = None
+    gold: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_review_config(document)
+
+
+class AcceptanceConfig(StrictModel):
+    """Strict v2-only configuration for compiling explicitly approved labels."""
+
+    schema_version: Literal["2"]
+    sanitized: str = Field(min_length=1)
+    candidates: str = Field(min_length=1)
+    routes: str = Field(min_length=1)
+    review: str = Field(min_length=1)
+    review_manifest: str = Field(min_length=1)
+    output: Stage9Output
+    quotas: RouteSampling | None = None
+    gold: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_acceptance_config(document)
+
+
+class GoldQualityConfig(StrictModel):
+    """Strict v2-only configuration for generated-label gold comparison."""
+
+    schema_version: Literal["2"]
+    sanitized: str = Field(min_length=1)
+    candidates: str = Field(min_length=1)
+    routes: str = Field(min_length=1)
+    gold: str = Field(min_length=1)
+    output: Stage9Output
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_gold_quality_config(document)
+
+
+ReviewerDecisionKind = Literal["unreviewed", "approved", "rejected"]
+ReviewerRejectionReason = Literal[
+    "incorrect_route",
+    "incorrect_arguments",
+    "insufficient_context",
+    "other",
+]
+
+
+class ReviewerDecision(StrictModel):
+    """The only editable portion of a review row."""
+
+    decision: ReviewerDecisionKind
+    reviewer: str | None = None
+    reviewed_at: str | None = Field(
+        default=None,
+        pattern=(
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+            r"(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$"
+        ),
+    )
+    reason: ReviewerRejectionReason | None = None
+
+    @field_validator("reviewed_at")
+    @classmethod
+    def validate_reviewed_at(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        LabelCandidateProvenance.validate_response_timestamp(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_decision_details(self) -> ReviewerDecision:
+        if self.decision == "unreviewed":
+            if any(
+                value is not None
+                for value in (self.reviewer, self.reviewed_at, self.reason)
+            ):
+                raise ValueError(
+                    "unreviewed decisions require no reviewer, reviewed_at, or reason"
+                )
+            return self
+        if (
+            self.reviewer is None
+            or not self.reviewer.strip()
+            or self.reviewed_at is None
+        ):
+            raise ValueError(
+                "approved and rejected decisions require reviewer and reviewed_at"
+            )
+        if self.decision == "approved" and self.reason is not None:
+            raise ValueError("approved decisions require no reason")
+        if self.decision == "rejected" and self.reason is None:
+            raise ValueError("rejected decisions require a finite reason")
+        return self
+
+
+CandidateValidationCode = Literal[
+    "provider_rejected",
+    "unknown_route",
+    "invalid_arguments",
+]
+
+
+class CandidateValidation(StrictModel):
+    """Local route validation status shown in a review report."""
+
+    valid: bool
+    reason: CandidateValidationCode | None = None
+
+    @model_validator(mode="after")
+    def validate_reason(self) -> CandidateValidation:
+        if self.valid and self.reason is not None:
+            raise ValueError("valid candidate validation requires no reason")
+        if not self.valid and self.reason is None:
+            raise ValueError("invalid candidate validation requires a finite reason")
+        return self
+
+
+class ReviewRow(StrictModel):
+    """Reviewable JSONL/CSV source row; raw input exists only in this report data."""
+
+    schema_version: Literal["2"]
+    source_id: str = Field(min_length=1)
+    input: str = Field(min_length=1)
+    candidate: LabelCandidate
+    validation: CandidateValidation
+    selected_for_review: bool
+    review: ReviewerDecision
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_review_row(document)
+
+    @model_validator(mode="after")
+    def validate_approval(self) -> ReviewRow:
+        if self.review.decision == "approved" and (
+            not self.selected_for_review
+            or not self.validation.valid
+            or self.candidate.status != "labeled"
+        ):
+            raise ValueError(
+                "approved review rows require a selected, valid labeled candidate"
+            )
+        return self
+
+
+class ReviewArtifact(StrictModel):
+    """A count and SHA-256 binding for immutable Stage-9 JSONL inputs."""
+
+    rows: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ReviewManifest(StrictModel):
+    """Immutable provenance for an editable review report."""
+
+    schema_version: Literal["2"]
+    sanitized: ReviewArtifact
+    sanitized_manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidates: ReviewArtifact
+    candidate_manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    registry_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provider_model: str = Field(min_length=1)
+    provider_endpoint: str = Field(min_length=1)
+    sampling: RouteSampling | None = None
+    rows: ReviewArtifact
+    immutable_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("provider_endpoint")
+    @classmethod
+    def validate_provider_endpoint(cls, value: str) -> str:
+        return _validate_provider_endpoint(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_review_manifest(document)
+
+
+class AcceptedLabelProvenance(StrictModel):
+    """Non-secret traceability that accompanies each future accepted training row."""
+
+    source_id: str = Field(min_length=1)
+    source_line: int = Field(ge=1)
+    candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    handoff_rows_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    handoff_manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    registry_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provider_model: str = Field(min_length=1)
+    provider_endpoint: str = Field(min_length=1)
+    reviewer: str = Field(min_length=1)
+    reviewed_at: str = Field(
+        pattern=(
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+            r"(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$"
+        )
+    )
+    review_rows_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("provider_endpoint")
+    @classmethod
+    def validate_provider_endpoint(cls, value: str) -> str:
+        return _validate_provider_endpoint(value)
+
+    @field_validator("reviewed_at")
+    @classmethod
+    def validate_reviewed_at(cls, value: str) -> str:
+        LabelCandidateProvenance.validate_response_timestamp(value)
+        return value
+
+
+class AcceptanceManifest(StrictModel):
+    """Immutable provenance for future Stage-1-validated accepted output."""
+
+    schema_version: Literal["2"]
+    sanitized: ReviewArtifact
+    sanitized_manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidates: ReviewArtifact
+    candidate_manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    review: ReviewArtifact
+    review_manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    immutable_review_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    registry_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provider_model: str = Field(min_length=1)
+    provider_endpoint: str = Field(min_length=1)
+    quotas: RouteSampling | None = None
+    output: ReviewArtifact
+
+    @field_validator("provider_endpoint")
+    @classmethod
+    def validate_provider_endpoint(cls, value: str) -> str:
+        return _validate_provider_endpoint(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_acceptance_manifest(document)
+
+
+class ReviewRouteQuality(StrictModel):
+    """One route's sampling, review, rejection, and acceptance counts."""
+
+    route: str = Field(min_length=1)
+    candidate_rows: int = Field(ge=0)
+    provider_rejected: int = Field(ge=0)
+    locally_invalid: int = Field(ge=0)
+    selected_for_review: int = Field(ge=0)
+    unreviewed: int = Field(ge=0)
+    reviewer_rejected: int = Field(ge=0)
+    approved: int = Field(ge=0)
+    quota: int | None = Field(default=None, ge=0)
+    quota_shortfall: int = Field(ge=0)
+    accepted: int = Field(ge=0)
+
+
+class ReviewQualityReport(StrictModel):
+    """Quality evidence future review orchestration can emit without raw inputs."""
+
+    schema_version: Literal["2"]
+    candidates: ReviewArtifact
+    rejection_rate: float = Field(ge=0, le=1)
+    imbalance_detected: bool
+    routes: list[ReviewRouteQuality] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_review_quality_report(document)
+
+
+class GoldRouteQuality(StrictModel):
+    """Per-route generated-label comparison metrics, including unusable decisions."""
+
+    route: str = Field(min_length=1)
+    examples: int = Field(ge=0)
+    valid_decisions: int = Field(ge=0)
+    invalid_decisions: int = Field(ge=0)
+    no_decision: int = Field(ge=0)
+    route_correct: int = Field(ge=0)
+    exact_decision_correct: int = Field(ge=0)
+    invalid_decision_rate: float | None = Field(default=None, ge=0, le=1)
+
+
+class GoldQualityReport(StrictModel):
+    """Gold comparison output with aggregate and route-level invalid-decision rates."""
+
+    schema_version: Literal["2"]
+    gold: ReviewArtifact
+    candidates: ReviewArtifact
+    invalid_decision_rate: float | None = Field(default=None, ge=0, le=1)
+    routes: list[GoldRouteQuality] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_schema_version(cls, document: Any) -> Any:
+        return migrate_gold_quality_report(document)
 
 
 class ModelConfig(StrictModel):

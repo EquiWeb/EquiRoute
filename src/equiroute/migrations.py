@@ -60,6 +60,56 @@ def migrate_labeling_manifest(document: Any) -> Any:
     return _require_current_version(document, document_name="labeling manifest")
 
 
+def migrate_review_config(document: Any) -> Any:
+    """Require the only supported candidate-review configuration schema."""
+
+    return _require_current_version(document, document_name="review configuration")
+
+
+def migrate_acceptance_config(document: Any) -> Any:
+    """Require the only supported label-acceptance configuration schema."""
+
+    return _require_current_version(document, document_name="acceptance configuration")
+
+
+def migrate_gold_quality_config(document: Any) -> Any:
+    """Require the only supported gold-quality configuration schema."""
+
+    return _require_current_version(
+        document, document_name="gold quality configuration"
+    )
+
+
+def migrate_review_manifest(document: Any) -> Any:
+    """Require the only supported candidate-review manifest schema."""
+
+    return _require_current_version(document, document_name="review manifest")
+
+
+def migrate_review_row(document: Any) -> Any:
+    """Require the only supported candidate-review row schema."""
+
+    return _require_current_version(document, document_name="review row")
+
+
+def migrate_acceptance_manifest(document: Any) -> Any:
+    """Require the only supported label-acceptance manifest schema."""
+
+    return _require_current_version(document, document_name="acceptance manifest")
+
+
+def migrate_review_quality_report(document: Any) -> Any:
+    """Require the only supported candidate-review quality report schema."""
+
+    return _require_current_version(document, document_name="review quality report")
+
+
+def migrate_gold_quality_report(document: Any) -> Any:
+    """Require the only supported generated-label gold-quality report schema."""
+
+    return _require_current_version(document, document_name="gold quality report")
+
+
 def migrate_dataset_report(document: Any) -> Any:
     """Migrate a versioned dataset report to the current raw form."""
 

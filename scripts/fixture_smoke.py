@@ -89,10 +89,19 @@ def _validate_deterministically(executable: str, config: Path) -> None:
         raise RuntimeError(f"validation output is not canonical JSON for {config}")
 
 
+def _require_stage9_command_surface(executable: str) -> None:
+    help_output = _require_success(_run(executable, "--help"))
+    for command in ("review-labels", "accept-labels"):
+        if command not in help_output:
+            raise RuntimeError(f"CLI help does not list {command}")
+
+
 def main() -> None:
     executable = shutil.which("equiroute")
     if executable is None:
         raise RuntimeError("the installed equiroute executable is not on PATH")
+
+    _require_stage9_command_surface(executable)
 
     with tempfile.TemporaryDirectory(
         prefix="equiroute-fixture-"

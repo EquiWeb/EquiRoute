@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+import equiroute.openrouter_client as openrouter_client
 from equiroute.openrouter_client import OpenRouterClient, _default_client_factory
 
 
@@ -328,6 +329,25 @@ def test_missing_credential_does_not_create_sdk_client(
     assert response.attempts == 1
     assert response.detail == "credential environment variable is not set"
     assert factory.kwargs == []
+
+
+def test_default_factory_preserves_missing_optional_sdk_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested: list[str] = []
+
+    def missing_import(name: str) -> ModuleType:
+        requested.append(name)
+        raise ModuleNotFoundError(name=name)
+
+    monkeypatch.setattr(openrouter_client.importlib, "import_module", missing_import)
+
+    with pytest.raises(ModuleNotFoundError):
+        _default_client_factory(
+            api_key=SECRET, server_url="https://provider.example/api/v1"
+        )
+
+    assert requested == ["openrouter"]
 
 
 def test_default_factory_disables_sdk_debug_logging_despite_ambient_environment(
