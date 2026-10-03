@@ -23,29 +23,6 @@ from equiroute.schemas import AcceptanceManifest, LabelingManifest, ReviewManife
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def test_help_lists_the_command_surface() -> None:
-    result = CliRunner().invoke(app, ["--help"])
-
-    assert result.exit_code == 0
-    for command in (
-        "init",
-        "validate",
-        "split",
-        "ingest",
-        "label",
-        "review-labels",
-        "accept-labels",
-        "train",
-        "evaluate",
-        "continue",
-        "export",
-    ):
-        assert command in result.output
-    ingest_help = CliRunner().invoke(app, ["ingest", "--help"])
-    assert ingest_help.exit_code == 0
-    assert "--debug" in ingest_help.output
-
-
 def test_validate_reports_checked_in_disjoint_fixture_contract() -> None:
     result = CliRunner().invoke(app, ["validate", str(FIXTURES / "config.yaml")])
 

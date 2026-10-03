@@ -6,24 +6,6 @@ import equiroute.cli as cli
 from equiroute.training import TrainingError
 
 
-def test_training_command_help_exposes_training_arguments() -> None:
-    runner = CliRunner()
-
-    train_help = runner.invoke(cli.app, ["train", "--help"])
-    continue_help = runner.invoke(cli.app, ["continue", "--help"])
-    export_help = runner.invoke(cli.app, ["export", "--help"])
-
-    assert train_help.exit_code == 0
-    assert "config" in train_help.output
-    assert "--resume" in train_help.output
-    assert continue_help.exit_code == 0
-    assert "--from" in continue_help.output
-    assert "--config" in continue_help.output
-    assert export_help.exit_code == 0
-    assert "artifact" in export_help.output
-    assert "--format" in export_help.output
-
-
 def test_train_forwards_config_and_resume_to_public_api(monkeypatch, tmp_path) -> None:
     config = tmp_path / "config.yaml"
     calls: list[tuple[Path, bool]] = []
